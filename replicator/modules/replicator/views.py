@@ -246,7 +246,9 @@ except Exception as e:
 
     try:
         ssh_args = build_ssh_args(ip, port, username, password if auth_method == 'password' else None, key_path)
-        cmd = ["ssh"] + ssh_args + [f"{username}@{ip}", "python3"]
+        # Use sudo python3 if connecting as non-root user (e.g. ubuntu on Oracle Cloud)
+        remote_py_cmd = ["sudo", "python3"] if username != 'root' else ["python3"]
+        cmd = ["ssh"] + ssh_args + [f"{username}@{ip}"] + remote_py_cmd
         
         env = os.environ.copy()
         if auth_method == 'password':
@@ -588,7 +590,11 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
             # Apply compression flag dynamically based on user config (CPU vs Network compression tuning)
             rsync_flags = "-az" if compress_transfer else "-a"
-            rsync_cmd = ["rsync", rsync_flags, "--timeout=60", "--delete", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{source_path}/", f"{dest_path}/"]
+            rsync_cmd = ["rsync", rsync_flags, "--timeout=60", "--delete"]
+            # Use sudo on the remote source if connecting as a non-root admin (like ubuntu)
+            if ssh_username != 'root':
+                rsync_cmd += ["--rsync-path=sudo rsync"]
+            rsync_cmd += ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{source_path}/", f"{dest_path}/"]
             
             log_fp.write(f"⚡ Running rsync file transfer (silent mode, compression={'ON' if compress_transfer else 'OFF'})...\n")
             log_fp.write("Syncing files ")
@@ -624,7 +630,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
             # Replicate Let's Encrypt SSL folder if present
             log_fp.write(f"🔒 Checking SSL certificates for '{domain_name}'...\n")
-            ssl_check_cmd = f"[ -d /etc/letsencrypt/live/{domain_name} ] && echo 'SSL_EXISTS'"
+            # Use sudo to check /etc/letsencrypt permission-restricted folder on remote
+            ssl_check_cmd = f"sudo [ -d /etc/letsencrypt/live/{domain_name} ] && echo 'SSL_EXISTS'"
             ssl_res = run_ssh_command(ssl_check_cmd)
             if 'SSL_EXISTS' in ssl_res.stdout:
                 log_fp.write(f"🔑 Copying Let's Encrypt SSL folders for '{domain_name}'...\n")
@@ -634,9 +641,13 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 os.makedirs(f"/etc/letsencrypt/renewal", exist_ok=True)
 
                 # Sync live, archive, and renewal config
-                subprocess.run(["rsync", "-avz", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/live/{domain_name}/", f"/etc/letsencrypt/live/{domain_name}/"])
-                subprocess.run(["rsync", "-avz", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/archive/{domain_name}/", f"/etc/letsencrypt/archive/{domain_name}/"])
-                subprocess.run(["rsync", "-avz", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/renewal/{domain_name}.conf", f"/etc/letsencrypt/renewal/{domain_name}.conf"])
+                rsync_ssl_args = ["rsync", "-avz"]
+                if ssh_username != 'root':
+                    rsync_ssl_args += ["--rsync-path=sudo rsync"]
+
+                subprocess.run(rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/live/{domain_name}/", f"/etc/letsencrypt/live/{domain_name}/"])
+                subprocess.run(rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/archive/{domain_name}/", f"/etc/letsencrypt/archive/{domain_name}/"])
+                subprocess.run(rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/renewal/{domain_name}.conf", f"/etc/letsencrypt/renewal/{domain_name}.conf"])
                 
                 # Fix symlinks inside letsencrypt/live/ which might be broken by rsync
                 # Usually they point relatively to ../../archive/domain/file.pem
@@ -663,15 +674,16 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # 4a. Replicate MySQL database users and grants
         log_fp.write("👥 Fetching database users and grants from source...\n")
         
-        # Script to output Grants statement with passwords
-        grants_dump_cmd = "mysql -u root -B -N -e \"SELECT DISTINCT CONCAT('SHOW GRANTS FOR \'', User, '\'@\'', Host, '\';') FROM mysql.user WHERE User NOT IN ('root', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'mariadb.sys', 'debian-sys-maint');\""
+        # Script to output Grants statement with passwords (use sudo to access socket auth-linked mysql)
+        grants_dump_cmd = "sudo mysql -u root -B -N -e \"SELECT DISTINCT CONCAT('SHOW GRANTS FOR \'', User, '\'@\'', Host, '\';') FROM mysql.user WHERE User NOT IN ('root', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'mariadb.sys', 'debian-sys-maint');\""
         grants_list_res = run_ssh_command(grants_dump_cmd)
         
         if grants_list_res.returncode == 0:
             grants_sql = ""
             for show_grant_cmd in grants_list_res.stdout.strip().split('\n'):
                 if show_grant_cmd.strip():
-                    grant_val_res = run_ssh_command(show_grant_cmd)
+                    # Run SQL command via remote mysql using sudo
+                    grant_val_res = run_ssh_command(f"sudo mysql -u root -B -N -e \"{show_grant_cmd}\"")
                     if grant_val_res.returncode == 0:
                         for grant_line in grant_val_res.stdout.strip().split('\n'):
                             if grant_line:
@@ -723,7 +735,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             else:
                 ssh_dump_opts = f"sshpass -e ssh -p {port} -o StrictHostKeyChecking=no"
 
-            dump_restore_cmd = f"{ssh_dump_opts} {ssh_username}@{ip} 'mysqldump --single-transaction {db_name}' | mysql {db_name}"
+            mysqldump_bin = "sudo mysqldump" if ssh_username != 'root' else "mysqldump"
+            dump_restore_cmd = f"{ssh_dump_opts} {ssh_username}@{ip} '{mysqldump_bin} --single-transaction {db_name}' | mysql {db_name}"
             
             log_fp.write("⚡ Streaming dump & restore pipeline...\n")
             try:
