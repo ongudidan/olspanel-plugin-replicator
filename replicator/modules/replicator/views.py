@@ -1249,6 +1249,37 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # Self-healing Django migrations handler
         log_fp.write("\nSyncing panel database migrations & running self-healer...\n")
         try:
+            # Pre-emptively fix any database column mismatches from older source databases
+            try:
+                from django.db import connection
+                with connection.cursor() as cursor:
+                    # Check users_profile columns
+                    cursor.execute("SHOW COLUMNS FROM users_profile LIKE 'pkg_id'")
+                    if not cursor.fetchone():
+                        try:
+                            cursor.execute("ALTER TABLE users_profile ADD COLUMN pkg_id INT DEFAULT NULL;")
+                            log_fp.write("Added missing 'pkg_id' column to 'users_profile' table.\n")
+                        except Exception:
+                            pass
+
+                    # Check user_settings columns
+                    cursor.execute("SHOW COLUMNS FROM user_settings LIKE 'hour_maximum_backup'")
+                    if not cursor.fetchone():
+                        columns_to_add = [
+                            "hour_maximum_backup INT DEFAULT 24",
+                            "day_maximum_backup INT DEFAULT 100",
+                            "week_maximum_backup INT DEFAULT 50",
+                            "month_maximum_backup INT DEFAULT 12"
+                        ]
+                        for col in columns_to_add:
+                            try:
+                                cursor.execute(f"ALTER TABLE user_settings ADD COLUMN {col};")
+                                log_fp.write(f"Added missing user_settings column: {col}\n")
+                            except Exception:
+                                pass
+            except Exception as dbe:
+                log_fp.write(f"Note: pre-emptive column check: {str(dbe)}\n")
+
             # We run migrations in a separate subprocess to avoid Django thread deadlocks or connection pooling conflicts
             python_bin = "/root/venv/bin/python" if os.path.exists("/root/venv/bin/python") else "python3"
             manage_py = "/usr/local/olspanel/mypanel/manage.py"
