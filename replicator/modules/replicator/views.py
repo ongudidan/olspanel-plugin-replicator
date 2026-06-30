@@ -1406,7 +1406,10 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 s_new.clear()
                 for k, v in admin_session_data_dict.items():
                     s_new[k] = v
-                s_new.save()
+                try:
+                    s_new.save(must_create=True)
+                except Exception:
+                    s_new.save(must_create=False)
                 log_fp.write("Preserved and authenticated active admin session successfully.\n")
             except Exception as se:
                 import traceback
@@ -1436,7 +1439,10 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 s_new.clear()
                 for k, v in user_session_data_dict.items():
                     s_new[k] = v
-                s_new.save()
+                try:
+                    s_new.save(must_create=True)
+                except Exception:
+                    s_new.save(must_create=False)
                 log_fp.write("Preserved and authenticated active user session successfully.\n")
             except Exception as se:
                 import traceback
