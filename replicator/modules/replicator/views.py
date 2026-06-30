@@ -513,7 +513,7 @@ def stream_logs_view(request, job_id):
                         with connection.cursor() as cursor:
                             cursor.execute("SELECT status FROM replicator_jobs WHERE id = %s", [job_id])
                             row = cursor.fetchone()
-                            if row and row[0] in ['completed', 'failed']:
+                            if row and row[0] in ['completed', 'failed', 'cancelled']:
                                 is_done = True
                     except Exception:
                         pass
@@ -594,7 +594,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         
         def check_cancellation(phase=""):
             if is_job_cancelled(job_id):
-                log_fp.write(f"\n❌ Migration cancelled by user during {phase}.\n")
+                log_fp.write(f"\nMigration cancelled by user during {phase}.\n")
                 if key_path and os.path.exists(key_path):
                     try:
                         os.remove(key_path)
@@ -602,13 +602,13 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                         pass
                 return True
             return False
-        log_fp.write(f"🚀 Starting Server Replication Job #{job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        log_fp.write(f"🌍 Source Server: {ip}:{port}\n")
-        log_fp.write(f"📦 Items Selected: {len(users)} users, {len(domains)} domains, {len(databases)} databases\n\n")
+        log_fp.write(f"Starting Server Replication Job #{job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_fp.write(f"Source Server: {ip}:{port}\n")
+        log_fp.write(f"Items Selected: {len(users)} users, {len(domains)} domains, {len(databases)} databases\n\n")
 
         # 1. Setup Key File
         if auth_method == 'key':
-            log_fp.write("🔑 Writing secure temporary private key file...\n")
+            log_fp.write("Writing secure temporary private key file...\n")
             key_path = write_key_file(ssh_key, job_id)
         
         ssh_args = build_ssh_args(ip, port, ssh_username, password if auth_method == 'password' else None, key_path)
@@ -626,7 +626,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
         # 2. Replicate Linux System Users
         log_fp.write("==================================================\n")
-        log_fp.write("👥 Phase 1: Replicating Linux System Users\n")
+        log_fp.write("Phase 1: Replicating Linux System Users\n")
         log_fp.write("==================================================\n")
         
         for u in users:
@@ -636,18 +636,18 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             is_superuser = u.get('is_superuser', False)
             email = u.get('email', '')
 
-            log_fp.write(f"👤 Processing user '{username}'...\n")
+            log_fp.write(f"Processing user '{username}'...\n")
 
             # Get user shell and home path from source passwd
             pwd_res = run_ssh_command(f"getent passwd {username}")
             if pwd_res.returncode != 0:
-                log_fp.write(f"⚠️ User '{username}' passwd not found on source server. Skipping Linux account setup.\n")
+                log_fp.write(f"User '{username}' passwd not found on source server. Skipping Linux account setup.\n")
                 continue
 
             # Format: username:x:uid:gid:gecos:home:shell
             pwd_parts = pwd_res.stdout.strip().split(':')
             if len(pwd_parts) < 7:
-                log_fp.write(f"⚠️ Failed to parse passwd info for user '{username}'. Skipping Linux account setup.\n")
+                log_fp.write(f"Failed to parse passwd info for user '{username}'. Skipping Linux account setup.\n")
                 continue
 
             uid = pwd_parts[2]
@@ -666,7 +666,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             # Check if user already exists locally
             local_user_check = subprocess.run(["getent", "passwd", username], capture_output=True)
             if local_user_check.returncode == 0:
-                log_fp.write(f"ℹ️ System user '{username}' already exists locally. Updating home directory and shell...\n")
+                log_fp.write(f"System user '{username}' already exists locally. Updating home directory and shell...\n")
                 subprocess.run(["usermod", "-s", shell, "-d", home_dir, username])
             else:
                 # Create user
@@ -676,12 +676,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     create_cmd += ["-p", remote_shadow_hash]
                 create_cmd.append(username)
 
-                log_fp.write(f"➕ Creating system user '{username}' locally...\n")
+                log_fp.write(f"Creating system user '{username}' locally...\n")
                 res = subprocess.run(create_cmd, capture_output=True, text=True)
                 if res.returncode != 0:
-                    log_fp.write(f"❌ Failed to create system user '{username}': {res.stderr}\n")
+                    log_fp.write(f"Failed to create system user '{username}': {res.stderr}\n")
                 else:
-                    log_fp.write(f"🟢 Successfully created system user '{username}'.\n")
+                    log_fp.write(f"Successfully created system user '{username}'.\n")
 
             # Sync user Django metadata
             try:
@@ -700,13 +700,13 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     if password_hash and django_user.password != password_hash:
                         django_user.password = password_hash
                         django_user.save()
-                log_fp.write(f"🔒 Django database user record synced for '{username}'.\n")
+                log_fp.write(f"Django database user record synced for '{username}'.\n")
             except Exception as e:
-                log_fp.write(f"⚠️ Warning syncing Django user record: {str(e)}\n")
+                log_fp.write(f"Warning syncing Django user record: {str(e)}\n")
 
         # 3. Synchronize Web Directories (Rsync)
         log_fp.write("\n==================================================\n")
-        log_fp.write("📁 Phase 2: Transferring Web Content & Files\n")
+        log_fp.write("Phase 2: Transferring Web Content & Files\n")
         log_fp.write("==================================================\n")
 
         for d in domains:
@@ -715,13 +715,13 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             owner = d.get('username')
             source_path = d.get('path', f'/home/{owner}/{domain_name}')
 
-            log_fp.write(f"📂 Syncing website files for '{domain_name}'...\n")
+            log_fp.write(f"Syncing website files for '{domain_name}'...\n")
             
             # Skip file transfer if the source path does not exist on the remote server
             # (e.g. system control panel virtual host configurations or directories that aren't on disk)
             remote_dir_check = run_ssh_command(f"[ -d '{source_path}' ]")
             if remote_dir_check.returncode != 0:
-                log_fp.write(f"ℹ️ Skipping file transfer: directory '{source_path}' does not exist on source server.\n")
+                log_fp.write(f"Skipping file transfer: directory '{source_path}' does not exist on source server.\n")
                 continue
             
             # Resolve destination path
@@ -743,7 +743,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 rsync_cmd += ["--rsync-path=sudo rsync"]
             rsync_cmd += ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{source_path}/", f"{dest_path}/"]
             
-            log_fp.write(f"⚡ Running rsync file transfer (silent mode, compression={'ON' if compress_transfer else 'OFF'})...\n")
+            log_fp.write(f"Running rsync file transfer (silent mode, compression={'ON' if compress_transfer else 'OFF'})...\n")
             log_fp.write("Syncing files ")
             
             # Run rsync
@@ -754,7 +754,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             while rsync_proc.poll() is None:
                 if time.time() - last_tick >= 5:
                     if is_job_cancelled(job_id):
-                        log_fp.write("\n❌ Migration cancelled. Terminating active rsync process...\n")
+                        log_fp.write("\nMigration cancelled. Terminating active rsync process...\n")
                         rsync_proc.terminate()
                         rsync_proc.wait()
                         if key_path and os.path.exists(key_path):
@@ -770,18 +770,18 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             
             rsync_proc.wait()
             if rsync_proc.returncode == 0:
-                log_fp.write(f"🟢 File transfer complete. Adjusting file permissions for {owner}...\n")
+                log_fp.write(f"File transfer complete. Adjusting file permissions for {owner}...\n")
                 subprocess.run(["chown", "-R", f"{owner}:{owner}", dest_path])
             else:
-                log_fp.write(f"❌ File transfer failed with code {rsync_proc.returncode}.\n")
+                log_fp.write(f"File transfer failed with code {rsync_proc.returncode}.\n")
 
             # Replicate Let's Encrypt SSL folder if present
-            log_fp.write(f"🔒 Checking SSL certificates for '{domain_name}'...\n")
+            log_fp.write(f"Checking SSL certificates for '{domain_name}'...\n")
             # Use sudo to check /etc/letsencrypt permission-restricted folder on remote
             ssl_check_cmd = f"sudo [ -d /etc/letsencrypt/live/{domain_name} ] && echo 'SSL_EXISTS'"
             ssl_res = run_ssh_command(ssl_check_cmd)
             if 'SSL_EXISTS' in ssl_res.stdout:
-                log_fp.write(f"🔑 Copying Let's Encrypt SSL folders for '{domain_name}'...\n")
+                log_fp.write(f"Copying Let's Encrypt SSL folders for '{domain_name}'...\n")
                 # Create local SSL directories
                 os.makedirs(f"/etc/letsencrypt/live/{domain_name}", exist_ok=True)
                 os.makedirs(f"/etc/letsencrypt/archive/{domain_name}", exist_ok=True)
@@ -811,15 +811,15 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                             os.remove(link_path)
                         os.symlink(archive_target, link_path)
                 
-                log_fp.write(f"🟢 SSL Certificate files successfully synced.\n")
+                log_fp.write(f"SSL Certificate files successfully synced.\n")
 
         # 4. Synchronize Databases & Users (MySQL)
         log_fp.write("\n==================================================\n")
-        log_fp.write("🗄️ Phase 3: Copying & Restoring Databases\n")
+        log_fp.write("Phase 3: Copying & Restoring Databases\n")
         log_fp.write("==================================================\n")
 
         # 4a. Replicate MySQL database users and grants
-        log_fp.write("👥 Fetching database users and grants from source...\n")
+        log_fp.write("Fetching database users and grants from source...\n")
         
         # Fetch remote MySQL base directory dynamically
         remote_base_dir = "/usr/local/olspanel/mypanel"
@@ -861,7 +861,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
             # Execute grants locally on destination database
             if grants_sql:
-                log_fp.write("🔑 Restoring database users and grants locally...\n")
+                log_fp.write("Restoring database users and grants locally...\n")
                 try:
                     # Write temp file and load it
                     sql_temp_path = f"/tmp/grants_{job_id}.sql"
@@ -875,10 +875,10 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                         
                     restore_grants_res = subprocess.run(f"{local_mysql_auth} < {sql_temp_path}", shell=True, capture_output=True, text=True)
                     if restore_grants_res.returncode == 0:
-                        log_fp.write("🟢 Database user credentials synced successfully.\n")
+                        log_fp.write("Database user credentials synced successfully.\n")
                     else:
                         # Fallback try executing line-by-line ignoring errors
-                        log_fp.write("⚠️ Direct SQL grants import warning: trying line-by-line fallback...\n")
+                        log_fp.write("Direct SQL grants import warning: trying line-by-line fallback...\n")
                         with connection.cursor() as cursor:
                             for line in grants_sql.split('\n'):
                                 if line.strip() and not line.startswith('--'):
@@ -886,19 +886,19 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                                         cursor.execute(line)
                                     except Exception:
                                         pass
-                        log_fp.write("🟢 Database credentials migration fallback executed.\n")
+                        log_fp.write("Database credentials migration fallback executed.\n")
                     os.remove(sql_temp_path)
                 except Exception as e:
-                    log_fp.write(f"⚠️ Warning migrating database users/grants: {str(e)}\n")
+                    log_fp.write(f"Warning migrating database users/grants: {str(e)}\n")
         else:
-            log_fp.write("⚠️ Could not read MySQL user list from source. Database connections may require manual setups if database users differ from site users.\n")
+            log_fp.write("Could not read MySQL user list from source. Database connections may require manual setups if database users differ from site users.\n")
 
         # 4b. Replicate Databases
         local_mysql_pass = get_local_mysql_password()
         for db_name in databases:
             if check_cancellation("Phase 3 (Database replication)"): return
-            log_fp.write(f"🗄️ Replicating database '{db_name}'...\n")
-            log_fp.write(f"⚠️ WARNING: This will overwrite/drop local tables in '{db_name}'. If the site is already live here, it may experience temporary query errors during the import.\n")
+            log_fp.write(f"Replicating database '{db_name}'...\n")
+            log_fp.write(f"WARNING: This will overwrite/drop local tables in '{db_name}'. If the site is already live here, it may experience temporary query errors during the import.\n")
             
             # Create local MySQL db
             create_db_cmd = ["mysql", "-u", "root"]
@@ -928,21 +928,21 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
             dump_restore_cmd = f"{ssh_dump_opts} {ssh_username}@{ip} '{remote_mysqldump_cmd}' | {local_mysql_cmd}"
             
-            log_fp.write("⚡ Streaming dump & restore pipeline...\n")
+            log_fp.write("Streaming dump & restore pipeline...\n")
             try:
                 # Add 30-minute timeout to prevent infinite socket hangs at scale
                 # Pass password securely via env variables in shell environment
                 res = subprocess.run(dump_restore_cmd, shell=True, env=env, capture_output=True, text=True, timeout=1800)
                 if res.returncode == 0:
-                    log_fp.write(f"🟢 Database '{db_name}' successfully imported.\n")
+                    log_fp.write(f"Database '{db_name}' successfully imported.\n")
                 else:
-                    log_fp.write(f"❌ Database '{db_name}' import failed: {res.stderr}\n")
+                    log_fp.write(f"Database '{db_name}' import failed: {res.stderr}\n")
             except subprocess.TimeoutExpired:
-                log_fp.write(f"❌ Database '{db_name}' import timed out (exceeded 30 mins).\n")
+                log_fp.write(f"Database '{db_name}' import timed out (exceeded 30 mins).\n")
 
         # 5. Sync OpenLiteSpeed configs & Django records
         log_fp.write("\n==================================================\n")
-        log_fp.write("🌐 Phase 4: Rebuilding OpenLiteSpeed Configs & Panel metadata\n")
+        log_fp.write("Phase 4: Rebuilding OpenLiteSpeed Configs & Panel metadata\n")
         log_fp.write("==================================================\n")
 
         for d in domains:
@@ -951,7 +951,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             owner = d.get('username')
             doc_root = f"/home/{owner}/{domain_name}"
 
-            log_fp.write(f"🌐 Synchronizing OLS Vhost configurations for '{domain_name}'...\n")
+            log_fp.write(f"Synchronizing OLS Vhost configurations for '{domain_name}'...\n")
             
             # Sync OLS Vhost config folder
             vhost_src = f"/usr/local/lsws/conf/vhosts/{domain_name}/"
@@ -969,11 +969,11 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             try:
                 registered = register_domain_in_httpd_config(domain_name, doc_root)
                 if registered:
-                    log_fp.write(f"🟢 Mapped '{domain_name}' to OpenLiteSpeed httpd_config.conf.\n")
+                    log_fp.write(f"Mapped '{domain_name}' to OpenLiteSpeed httpd_config.conf.\n")
                 else:
-                    log_fp.write(f"ℹ️ '{domain_name}' already declared in httpd_config.conf.\n")
+                    log_fp.write(f"'{domain_name}' already declared in httpd_config.conf.\n")
             except Exception as e:
-                log_fp.write(f"❌ Failed mapping '{domain_name}' to OpenLiteSpeed config: {str(e)}\n")
+                log_fp.write(f"Failed mapping '{domain_name}' to OpenLiteSpeed config: {str(e)}\n")
 
             # Create Domain Metadata in OLSPanel Database
             try:
@@ -986,23 +986,23 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     }
                 )
                 if created:
-                    log_fp.write(f"🟢 Registered '{domain_name}' metadata in OLSPanel dashboard records.\n")
+                    log_fp.write(f"Registered '{domain_name}' metadata in OLSPanel dashboard records.\n")
                 else:
-                    log_fp.write(f"ℹ️ '{domain_name}' already exists in panel database.\n")
+                    log_fp.write(f"'{domain_name}' already exists in panel database.\n")
             except Exception as e:
-                log_fp.write(f"⚠️ Warning adding domain metadata to DB: {str(e)}\n")
+                log_fp.write(f"Warning adding domain metadata to DB: {str(e)}\n")
 
         # Reload OpenLiteSpeed to apply configurations
-        log_fp.write("\n🔄 Reloading OpenLiteSpeed web server...\n")
+        log_fp.write("\nReloading OpenLiteSpeed web server...\n")
         subprocess.run(["/usr/local/lsws/bin/lswsctrl", "reload"])
-        log_fp.write("🟢 OpenLiteSpeed reloaded.\n")
+        log_fp.write("OpenLiteSpeed reloaded.\n")
 
         # Job Completed Successfully
         completed_at = datetime.now()
         with connection.cursor() as cursor:
             cursor.execute("UPDATE replicator_jobs SET status = 'completed', completed_at = %s WHERE id = %s", [completed_at, job_id])
         
-        log_fp.write(f"\n🎉 Server Migration Replication completed successfully at {completed_at.strftime('%Y-%m-%d %H:%M:%S')}!\n")
+        log_fp.write(f"\nServer Migration Replication completed successfully at {completed_at.strftime('%Y-%m-%d %H:%M:%S')}!\n")
     
     except Exception as err:
         completed_at = datetime.now()
@@ -1013,7 +1013,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             pass
 
         if log_fp:
-            log_fp.write(f"\n❌ Migration Failed with unexpected error: {str(err)}\n")
+            log_fp.write(f"\nMigration Failed with unexpected error: {str(err)}\n")
             log_fp.write(f"Timestamp: {completed_at.strftime('%Y-%m-%d %H:%M:%S')}\n")
     finally:
         if log_fp:

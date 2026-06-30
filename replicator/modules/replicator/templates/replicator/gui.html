@@ -814,7 +814,7 @@ function initializeLogsStream(jobId) {
         function readNextChunk() {
             reader.read().then(({done, value}) => {
                 if (done) {
-                    consoleDiv.innerHTML += "\n\n🏁 Log stream closed.";
+                    consoleDiv.innerHTML += "\n\nLog stream closed.";
                     checkJobFinalStatus(jobId);
                     return;
                 }
@@ -823,7 +823,7 @@ function initializeLogsStream(jobId) {
                 consoleDiv.scrollTop = consoleDiv.scrollHeight;
                 readNextChunk();
             }).catch(err => {
-                consoleDiv.innerHTML += "\n\n⚠️ Log stream disconnected.";
+                consoleDiv.innerHTML += "\n\nLog stream disconnected.";
                 checkJobFinalStatus(jobId);
             });
         }
