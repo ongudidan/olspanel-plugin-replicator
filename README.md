@@ -18,6 +18,7 @@ An official plugin for **OLSPanel** to easily duplicate/replicate a remote OLSPa
 > 1. **Destination Server Setup**: You must pre-install a fresh instance of **OLSPanel** on your new (destination) server. Keep it clean with no sites or databases configured.
 > 2. **Where to Install**: Install this Replicator plugin on the **new (destination) server's OLSPanel**. It is not required to install it on the old source server.
 > 3. **SSH Connectivity**: The new server must have SSH access to the old source server (authenticating via `root` SSH Private Key or Password).
+> 4. **Admin Credentials Overwrite**: If the admin accounts on both servers share the same username (e.g., `admin`), the replication will overwrite the new server's panel password with the old server's panel password. After migration, you will log in using your old server's admin credentials.
 
 ## Installation
 
