@@ -665,6 +665,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 cmd = ["sshpass", "-e"] + cmd
             return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
 
+        # Fetch remote OLSPanel base directory dynamically
+        remote_base_dir = "/usr/local/olspanel/mypanel"
+        dir_res = run_ssh_command("sudo cat /etc/olspanel/base_dir")
+        if dir_res.returncode == 0 and dir_res.stdout.strip():
+            remote_base_dir = dir_res.stdout.strip()
+
         # 2. Replicate Linux System Users
         log_fp.write("==================================================\n")
         log_fp.write("Phase 1: Replicating Linux System Users\n")
@@ -744,6 +750,20 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 log_fp.write(f"Django database user record synced for '{username}'.\n")
             except Exception as e:
                 log_fp.write(f"Warning syncing Django user record: {str(e)}\n")
+
+            # Replicate the user's password file (for auto-login / file manager access)
+            for file_prefix in ["_", "phpmyadmin_"]:
+                remote_pf = f"{remote_base_dir}/etc/{file_prefix}{username}"
+                pwd_file_res = run_ssh_command(f"sudo cat {remote_pf}")
+                if pwd_file_res.returncode == 0:
+                    local_pf = os.path.join(settings.BASE_DIR, 'etc', f"{file_prefix}{username}")
+                    try:
+                        os.makedirs(os.path.dirname(local_pf), exist_ok=True)
+                        with open(local_pf, 'w') as f:
+                            f.write(pwd_file_res.stdout)
+                        log_fp.write(f"Synced auto-login credentials file '{file_prefix}{username}'.\n")
+                    except Exception as fe:
+                        log_fp.write(f"Warning writing credentials file locally: {str(fe)}\n")
 
         # 3. Synchronize Web Directories (Rsync)
         log_fp.write("\n==================================================\n")
@@ -1047,15 +1067,27 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         log_fp.write("\nSyncing panel database migrations & running self-healer...\n")
         try:
             from django.core.management import call_command
+            
             try:
-                call_command('migrate', interactive=False)
-                log_fp.write("Migrations completed successfully.\n")
-            except Exception as migrate_err:
-                err_str = str(migrate_err)
-                if "already exists" in err_str:
-                    log_fp.write(f"Migration conflict detected: {err_str}. Resolving schema on the fly...\n")
+                # Pre-emptively generate missing migration files for file_manager
+                call_command('makemigrations', 'file_manager', interactive=False)
+            except Exception as me:
+                log_fp.write(f"Note: makemigrations file_manager: {str(me)}\n")
+
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    call_command('migrate', interactive=False)
+                    log_fp.write("Migrations completed successfully.\n")
+                    break
+                except Exception as migrate_err:
+                    err_str = str(migrate_err)
+                    log_fp.write(f"Migration conflict or error detected (attempt {attempt + 1}): {err_str}\n")
                     
-                    if "packages" in err_str:
+                    resolved = False
+                    
+                    # Case A: users_profile / packages / users.0005 conflict
+                    if "packages" in err_str or "pkg_id" in err_str or "users.0005" in err_str:
                         # Manually add the missing pkg_id column to users_profile if not present
                         with connection.cursor() as cursor:
                             try:
@@ -1063,18 +1095,50 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                                 log_fp.write("Successfully added missing 'pkg_id' column to 'users_profile' table.\n")
                             except Exception:
                                 pass
-                        # Fake apply users migration 0005
-                        call_command('migrate', 'users', '0005', fake=True, interactive=False)
-                        log_fp.write("Faked conflicting migration 'users.0005'.\n")
+                        try:
+                            call_command('migrate', 'users', '0005', fake=True, interactive=False)
+                            log_fp.write("Faked conflicting migration 'users.0005'.\n")
+                            resolved = True
+                        except Exception as fe:
+                            log_fp.write(f"Failed to fake users.0005: {str(fe)}\n")
                     
-                    # Retry migrating the rest of the database
-                    try:
-                        call_command('migrate', interactive=False)
-                        log_fp.write("Migrations completed successfully after resolving conflicts.\n")
-                    except Exception as retry_err:
-                        log_fp.write(f"Warning running migrations retry: {str(retry_err)}\n")
-                else:
-                    log_fp.write(f"Warning running migrations: {err_str}\n")
+                    # Case B: user_settings already exists / file_manager conflict
+                    if "user_settings" in err_str:
+                        # Manually add the missing columns to user_settings table
+                        with connection.cursor() as cursor:
+                            columns_to_add = [
+                                "hour_maximum_backup INT DEFAULT 24",
+                                "day_maximum_backup INT DEFAULT 100",
+                                "week_maximum_backup INT DEFAULT 50",
+                                "month_maximum_backup INT DEFAULT 12"
+                            ]
+                            for col in columns_to_add:
+                                try:
+                                    cursor.execute(f"ALTER TABLE user_settings ADD COLUMN {col};")
+                                    log_fp.write(f"Successfully added missing column definition: {col}\n")
+                                except Exception:
+                                    pass
+                        try:
+                            # Fake apply the first migration of file_manager
+                            call_command('migrate', 'file_manager', fake=True, interactive=False)
+                            log_fp.write("Faked conflicting migration for 'file_manager'.\n")
+                            resolved = True
+                        except Exception as fe:
+                            log_fp.write(f"Failed to fake file_manager migration: {str(fe)}\n")
+                            
+                    # Case C: apps or other tables already exist (users.0006+)
+                    if "apps" in err_str or "app_settings" in err_str or "backup" in err_str or "bandwidth" in err_str or "blocked_ip" in err_str:
+                        try:
+                            # Fake apply users migrations
+                            call_command('migrate', 'users', fake=True, interactive=False)
+                            log_fp.write("Faked pending conflicting migrations for 'users'.\n")
+                            resolved = True
+                        except Exception as fe:
+                            log_fp.write(f"Failed to fake users migrations: {str(fe)}\n")
+
+                    if not resolved:
+                        log_fp.write("Could not auto-resolve migration error. Stopping self-healing.\n")
+                        break
         except Exception as e:
             log_fp.write(f"Warning syncing database migrations: {str(e)}\n")
 
