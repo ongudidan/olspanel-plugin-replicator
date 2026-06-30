@@ -1094,23 +1094,15 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         local_mysql_pass = get_local_mysql_password()
 
         # Save active admin session from being lost if local panel database gets overwritten
-        admin_session_record = None
+        session_data_dict = None
         if session_key:
-            import MySQLdb
             try:
-                # Retrieve current session from destination database
-                conn_db = MySQLdb.connect(
-                    host='127.0.0.1',
-                    user='root',
-                    passwd=local_mysql_pass or '',
-                    db='panel'
-                )
-                with conn_db.cursor() as cur:
-                    cur.execute("SELECT session_key, session_data, expire_date FROM django_session WHERE session_key = %s", [session_key])
-                    admin_session_record = cur.fetchone()
-                conn_db.close()
+                from django.contrib.sessions.backends.db import SessionStore
+                s = SessionStore(session_key=session_key)
+                if s.exists():
+                    session_data_dict = dict(s.items())
             except Exception as se:
-                log_fp.write(f"Note: failed to capture active admin session: {str(se)}\n")
+                log_fp.write(f"Note: failed to capture active session dict: {str(se)}\n")
 
         for db_name in databases:
             if check_cancellation("Phase 3 (Database replication)"): return
@@ -1156,29 +1148,6 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     log_fp.write(f"Database '{db_name}' import failed: {res.stderr}\n")
             except subprocess.TimeoutExpired:
                 log_fp.write(f"Database '{db_name}' import timed out (exceeded 30 mins).\n")
-
-        # Restore active admin session to the panel database if it was overwritten
-        if admin_session_record:
-            import MySQLdb
-            try:
-                local_mysql_pass = get_local_mysql_password()
-                conn_db = MySQLdb.connect(
-                    host='127.0.0.1',
-                    user='root',
-                    passwd=local_mysql_pass or '',
-                    db='panel'
-                )
-                with conn_db.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO django_session (session_key, session_data, expire_date)
-                        VALUES (%s, %s, %s)
-                        ON DUPLICATE KEY UPDATE session_data = %s, expire_date = %s
-                    """, [admin_session_record[0], admin_session_record[1], admin_session_record[2], admin_session_record[1], admin_session_record[2]])
-                    conn_db.commit()
-                conn_db.close()
-                log_fp.write("Preserved active admin session successfully. You will remain logged in.\n")
-            except Exception as se:
-                log_fp.write(f"Warning restoring active admin session: {str(se)}\n")
 
         # 5. Sync OpenLiteSpeed configs & Django records
         log_fp.write("\n==================================================\n")
@@ -1364,6 +1333,36 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                         log_fp.write(f"Failed to fake users: {fake_res.stderr.strip()}\n")
         except Exception as e:
             log_fp.write(f"Warning syncing database migrations: {str(e)}\n")
+
+        # Restore active admin session to the panel database if it was overwritten
+        if session_key and session_data_dict:
+            try:
+                from django.contrib.sessions.backends.db import SessionStore
+                from django.contrib.auth import get_user_model
+                
+                # Close all current Django connections to clear any stale cache or transaction isolation states
+                from django.db import connections
+                for conn in connections.all():
+                    conn.close()
+                
+                User = get_user_model()
+                # Get user ID from session dict
+                user_id = session_data_dict.get('_auth_user_id')
+                if user_id:
+                    user = User.objects.filter(id=user_id).first()
+                    if user:
+                        # Update the session auth hash to match the imported user's password hash to prevent Django invalidating the session
+                        session_data_dict['_auth_user_hash'] = user.get_session_auth_hash()
+                
+                # Save the updated session using Django's SessionStore backend
+                s_new = SessionStore(session_key=session_key)
+                s_new.clear()
+                for k, v in session_data_dict.items():
+                    s_new[k] = v
+                s_new.save()
+                log_fp.write("Preserved and authenticated active admin session successfully. You will remain logged in.\n")
+            except Exception as se:
+                log_fp.write(f"Warning restoring active admin session: {str(se)}\n")
 
         # Reload OpenLiteSpeed to apply configurations
         log_fp.write("\nReloading OpenLiteSpeed web server...\n")
