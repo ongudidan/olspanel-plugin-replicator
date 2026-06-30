@@ -803,6 +803,36 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         except Exception as e:
             log_fp.write(f"Warning synchronizing PHP packages: {str(e)}\n")
 
+        # 2c. Synchronize Node.js Versions
+        try:
+            log_fp.write("\nChecking installed Node.js versions on source server...\n")
+            node_check_cmd = "[ -d /usr/local/olspanel/bin/nodejs ] && ls -1 /usr/local/olspanel/bin/nodejs || true"
+            node_res = run_ssh_command(node_check_cmd)
+            
+            node_versions = []
+            if node_res.returncode == 0:
+                for line in node_res.stdout.splitlines():
+                    line = line.strip()
+                    if line and line.isdigit():
+                        node_versions.append(line)
+            
+            if node_versions:
+                log_fp.write(f"Found {len(node_versions)} Node.js versions on source: {', '.join(node_versions)}\n")
+                for version in node_versions:
+                    if not os.path.exists(f"/usr/local/olspanel/bin/nodejs/{version}"):
+                        log_fp.write(f"Installing Node.js version {version} locally...\n")
+                        node_install_res = subprocess.run(["sudo", "bash", "/usr/local/olspanel/mypanel/etc/install_node_versions.sh", "install", version], capture_output=True, text=True)
+                        if node_install_res.returncode == 0:
+                            log_fp.write(f"Node.js version {version} successfully installed.\n")
+                        else:
+                            log_fp.write(f"Warning: Failed to install Node.js version {version}: {node_install_res.stderr.strip()}\n")
+                    else:
+                        log_fp.write(f"Node.js version {version} is already installed locally.\n")
+            else:
+                log_fp.write("No Node.js versions found on the source server.\n")
+        except Exception as e:
+            log_fp.write(f"Warning synchronizing Node.js versions: {str(e)}\n")
+
         # 3. Synchronize Web Directories (Rsync)
         log_fp.write("\n==================================================\n")
         log_fp.write("Phase 2: Transferring Web Content & Files\n")
