@@ -1090,7 +1090,10 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     domain=domain_name,
                     defaults={
                         'userid': user_obj,
-                        'path': doc_root
+                        'path': doc_root,
+                        'php': '8.1',
+                        'ssl_exp': 'Not Available',
+                        'line': 0
                     }
                 )
                 if created:
