@@ -189,12 +189,23 @@ inventory = {
     'users': []
 }
 
+# 1. Fetch MySQL databases directly using system call (runs as root under sudo)
+import subprocess
+try:
+    res = subprocess.run(["mysql", "-u", "root", "-B", "-N", "-e", "SHOW DATABASES"], capture_output=True, text=True)
+    if res.returncode == 0:
+        for line in res.stdout.strip().split('\n'):
+            db_name = line.strip()
+            if db_name and db_name not in ['information_schema', 'mysql', 'performance_schema', 'sys']:
+                inventory['databases'].append(db_name)
+except Exception:
+    pass
+
 try:
     import django
     django.setup()
     from users.models import Domain
     from django.contrib.auth import get_user_model
-    from django.db import connection
 
     User = get_user_model()
 
@@ -215,14 +226,6 @@ try:
             'username': owner,
             'path': d.path
         })
-
-    # Get Databases
-    with connection.cursor() as cursor:
-        cursor.execute("SHOW DATABASES")
-        for row in cursor.fetchall():
-            db_name = row[0]
-            if db_name not in ['information_schema', 'mysql', 'performance_schema', 'sys', 'information_schema']:
-                inventory['databases'].append(db_name)
 
     print(json.dumps({'status': 'success', 'inventory': inventory}))
 except Exception as e:
