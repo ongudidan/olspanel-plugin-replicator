@@ -506,10 +506,11 @@ def start_migration_view(request):
 
     compress_transfer = request.POST.get('compress_transfer') == 'true'
 
+    session_key = request.session.session_key
     # Run actual replication asynchronously
     t = threading.Thread(
         target=run_replication_task,
-        args=(job_id, ip, port, username, auth_method, password, ssh_key, selected_users, selected_domains, selected_databases, compress_transfer, log_file)
+        args=(job_id, ip, port, username, auth_method, password, ssh_key, selected_users, selected_domains, selected_databases, compress_transfer, log_file, session_key)
     )
     t.daemon = True
     t.start()
@@ -626,7 +627,7 @@ def is_job_cancelled(job_id):
     except Exception:
         return False
 
-def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, compress_transfer, log_file):
+def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, compress_transfer, log_file, session_key=None):
     """Runs rsync, database dumps, user creations, OLS configurations, and django metadata imports"""
     log_fp = None
     key_path = None
@@ -1091,6 +1092,26 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
         # 4b. Replicate Databases
         local_mysql_pass = get_local_mysql_password()
+
+        # Save active admin session from being lost if local panel database gets overwritten
+        admin_session_record = None
+        if session_key:
+            import MySQLdb
+            try:
+                # Retrieve current session from destination database
+                conn_db = MySQLdb.connect(
+                    host='127.0.0.1',
+                    user='root',
+                    passwd=local_mysql_pass or '',
+                    db='panel'
+                )
+                with conn_db.cursor() as cur:
+                    cur.execute("SELECT session_key, session_data, expire_date FROM django_session WHERE session_key = %s", [session_key])
+                    admin_session_record = cur.fetchone()
+                conn_db.close()
+            except Exception as se:
+                log_fp.write(f"Note: failed to capture active admin session: {str(se)}\n")
+
         for db_name in databases:
             if check_cancellation("Phase 3 (Database replication)"): return
             log_fp.write(f"Replicating database '{db_name}'...\n")
@@ -1135,6 +1156,29 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     log_fp.write(f"Database '{db_name}' import failed: {res.stderr}\n")
             except subprocess.TimeoutExpired:
                 log_fp.write(f"Database '{db_name}' import timed out (exceeded 30 mins).\n")
+
+        # Restore active admin session to the panel database if it was overwritten
+        if admin_session_record:
+            import MySQLdb
+            try:
+                local_mysql_pass = get_local_mysql_password()
+                conn_db = MySQLdb.connect(
+                    host='127.0.0.1',
+                    user='root',
+                    passwd=local_mysql_pass or '',
+                    db='panel'
+                )
+                with conn_db.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO django_session (session_key, session_data, expire_date)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE session_data = %s, expire_date = %s
+                    """, [admin_session_record[0], admin_session_record[1], admin_session_record[2], admin_session_record[1], admin_session_record[2]])
+                    conn_db.commit()
+                conn_db.close()
+                log_fp.write("Preserved active admin session successfully. You will remain logged in.\n")
+            except Exception as se:
+                log_fp.write(f"Warning restoring active admin session: {str(se)}\n")
 
         # 5. Sync OpenLiteSpeed configs & Django records
         log_fp.write("\n==================================================\n")
