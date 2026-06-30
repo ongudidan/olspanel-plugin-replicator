@@ -191,7 +191,25 @@ import json
 import sys
 import os
 
-sys.path.append('/usr/local/olspanel/mypanel')
+# Detect OLSPanel base directory dynamically on the remote server
+base_dir = '/usr/local/olspanel/mypanel'
+base_dir_file = "/etc/olspanel/base_dir"
+if os.path.exists(base_dir_file):
+    try:
+        with open(base_dir_file, "r") as f:
+            detected_dir = f.read().strip()
+            if detected_dir and os.path.exists(detected_dir):
+                base_dir = detected_dir
+    except Exception:
+        pass
+
+if base_dir not in sys.path:
+    sys.path.append(base_dir)
+# Append common fallbacks to ensure compatibility across panel versions
+for fallback in ['/usr/local/lsws/Example/html/mypanel', '/usr/local/olspanel/mypanel']:
+    if os.path.exists(fallback) and fallback not in sys.path:
+        sys.path.append(fallback)
+
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mypanel.settings')
 
 inventory = {
@@ -202,8 +220,22 @@ inventory = {
 
 # 1. Fetch MySQL databases directly using system call (runs as root under sudo)
 import subprocess
+mysql_pass = None
+pass_file = os.path.join(base_dir, "etc/mysqlPassword")
+if os.path.exists(pass_file):
+    try:
+        with open(pass_file, "r") as f:
+            mysql_pass = f.read().strip()
+    except Exception:
+        pass
+
 try:
-    res = subprocess.run(["mysql", "-u", "root", "-B", "-N", "-e", "SHOW DATABASES"], capture_output=True, text=True)
+    mysql_cmd = ["mysql", "-u", "root"]
+    if mysql_pass:
+        mysql_cmd += [f"-p{mysql_pass}"]
+    mysql_cmd += ["-B", "-N", "-e", "SHOW DATABASES"]
+    
+    res = subprocess.run(mysql_cmd, capture_output=True, text=True)
     if res.returncode == 0:
         for line in res.stdout.strip().split('\\n'):
             db_name = line.strip()
@@ -233,14 +265,21 @@ try:
     for d in Domain.objects.select_related('userid').all():
         owner = d.userid.username if d.userid else 'nobody'
         
-        # Self-healing: if owner is nobody, look up disk owner on the remote server
-        if owner == 'nobody' and d.path and os.path.exists(d.path):
-            try:
-                import pwd
-                stat_info = os.stat(d.path)
-                owner = pwd.getpwuid(stat_info.st_uid).pw_name
-            except Exception:
-                pass
+        # Self-healing: if owner is nobody or root, parse it from /home/ path or disk owner
+        if owner in ['nobody', 'root']:
+            if d.path and d.path.startswith('/home/'):
+                parts = d.path.split('/')
+                if len(parts) > 2:
+                    owner = parts[2]
+            
+            # If still unresolved, look up disk owner of the folder
+            if owner in ['nobody', 'root'] and d.path and os.path.exists(d.path):
+                try:
+                    import pwd
+                    stat_info = os.stat(d.path)
+                    owner = pwd.getpwuid(stat_info.st_uid).pw_name
+                except Exception:
+                    pass
 
         inventory['domains'].append({
             'domain': d.domain,
@@ -268,6 +307,14 @@ except Exception as e:
                         owner = pwd.getpwuid(stat_info.st_uid).pw_name
                     except Exception:
                         pass
+                    
+                    if owner in ['nobody', 'root']:
+                        # Check /home to see if there is a corresponding user directory
+                        for u in users:
+                            if os.path.exists(f"/home/{u}/{d}"):
+                                owner = u
+                                break
+                    
                     inventory['domains'].append({'domain': d, 'username': owner, 'path': f'/home/{owner}/{d}'})
         
         print(json.dumps({'status': 'success', 'inventory': inventory, 'fallback': True, 'error': str(e)}))
