@@ -218,8 +218,18 @@ inventory = {
     'users': []
 }
 
-# 1. Fetch MySQL databases directly using system call (runs as root under sudo)
+# Helper to calculate remote directory size safely
 import subprocess
+def get_dir_size(path):
+    try:
+        res = subprocess.run(["du", "-s", "-B1", path], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0:
+            return int(res.stdout.split()[0])
+    except Exception:
+        pass
+    return 0
+
+# 1. Fetch MySQL databases directly using system call (runs as root under sudo)
 mysql_pass = None
 pass_files = [
     os.path.join(base_dir, "etc/mysqlPassword"),
@@ -237,6 +247,25 @@ for pf in pass_files:
         except Exception:
             pass
 
+# Query database sizes directly from MySQL stats
+db_sizes = {}
+try:
+    mysql_size_cmd = ["mysql", "-u", "root"]
+    if mysql_pass:
+        mysql_size_cmd += [f"-p{mysql_pass}"]
+    mysql_size_cmd += ["-B", "-N", "-e", "SELECT table_schema, SUM(data_length + index_length) FROM information_schema.TABLES GROUP BY table_schema;"]
+    size_res = subprocess.run(mysql_size_cmd, capture_output=True, text=True, timeout=4)
+    if size_res.returncode == 0:
+        for line in size_res.stdout.strip().split('\\n'):
+            parts = line.strip().split('\t')
+            if len(parts) == 2:
+                try:
+                    db_sizes[parts[0]] = int(parts[1])
+                except ValueError:
+                    pass
+except Exception:
+    pass
+
 try:
     mysql_cmd = ["mysql", "-u", "root"]
     if mysql_pass:
@@ -248,7 +277,10 @@ try:
         for line in res.stdout.strip().split('\\n'):
             db_name = line.strip()
             if db_name and db_name not in ['information_schema', 'mysql', 'performance_schema', 'sys']:
-                inventory['databases'].append(db_name)
+                inventory['databases'].append({
+                    'name': db_name,
+                    'size': db_sizes.get(db_name, 0)
+                })
     else:
         inventory['db_error'] = res.stderr
 except Exception as e:
@@ -264,11 +296,14 @@ try:
 
     # Get users mapped to panel
     for u in User.objects.all():
+        user_dir = f"/home/{u.username}"
+        size = get_dir_size(user_dir) if os.path.exists(user_dir) else 0
         inventory['users'].append({
             'username': u.username,
             'email': u.email,
             'password_hash': u.password,
-            'is_superuser': u.is_superuser
+            'is_superuser': u.is_superuser,
+            'size': size
         })
 
     # Get domains
@@ -291,10 +326,12 @@ try:
                 except Exception:
                     pass
 
+        size = get_dir_size(d.path) if d.path and os.path.exists(d.path) else 0
         inventory['domains'].append({
             'domain': d.domain,
             'username': owner,
-            'path': d.path
+            'path': d.path,
+            'size': size
         })
 
     print(json.dumps({'status': 'success', 'inventory': inventory}))
@@ -303,7 +340,13 @@ except Exception as e:
     try:
         import pwd
         users = [p.pw_name for p in pwd.getpwall() if p.pw_uid >= 1000 and p.pw_dir.startswith('/home')]
-        inventory['users'] = [{'username': u, 'email': '', 'password_hash': '', 'is_superuser': False} for u in users]
+        inventory['users'] = [{
+            'username': u, 
+            'email': '', 
+            'password_hash': '', 
+            'is_superuser': False,
+            'size': get_dir_size(f'/home/{u}')
+        } for u in users]
         
         # List virtual host folders
         vh_dir = "/usr/local/lsws/conf/vhosts"
@@ -325,7 +368,13 @@ except Exception as e:
                                 owner = u
                                 break
                     
-                    inventory['domains'].append({'domain': d, 'username': owner, 'path': f'/home/{owner}/{d}'})
+                    doc_root = f'/home/{owner}/{d}'
+                    inventory['domains'].append({
+                        'domain': d, 
+                        'username': owner, 
+                        'path': doc_root,
+                        'size': get_dir_size(doc_root)
+                    })
         
         print(json.dumps({'status': 'success', 'inventory': inventory, 'fallback': True, 'error': str(e)}))
     except Exception as fallback_err:

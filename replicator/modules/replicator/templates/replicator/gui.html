@@ -298,6 +298,15 @@
     cursor: pointer;
     transition: all 0.2s;
 }
+.badge-size {
+    background: #f1f5f9;
+    color: #475569;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid #e2e8f0;
+}
 .btn-primary:hover {
     background: #2563eb;
     transform: translateY(-1px);
@@ -527,6 +536,16 @@ function populateSelectionLists(inventory) {
     inventoryDomains = inventory.domains || [];
     inventoryDatabases = inventory.databases || [];
 
+    // Helper to format bytes
+    function formatBytes(bytes) {
+        if (!bytes || bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+    window.formatBytes = formatBytes; // expose globally
+
     // Domains
     const domList = document.getElementById('domains-options-list');
     domList.innerHTML = '';
@@ -535,10 +554,14 @@ function populateSelectionLists(inventory) {
         domList.innerHTML = '<div style="font-size:0.8rem; color:#94a3b8;">No websites found.</div>';
     } else {
         inventoryDomains.forEach((d, idx) => {
+            const sizeStr = formatBytes(d.size);
             domList.innerHTML += `
                 <div class="tree-option" onclick="toggleOptionCheckbox('domain-${idx}')">
                     <input type="checkbox" id="domain-${idx}" class="domain-item" data-val='${JSON.stringify(d)}' onchange="updateSummary()" style="cursor:pointer;">
-                    <span><strong>${d.domain}</strong> <small style="color:#94a3b8;">(Owner: ${d.username})</small></span>
+                    <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                        <span><strong>${d.domain}</strong> <small style="color:#94a3b8;">(Owner: ${d.username})</small></span>
+                        <span class="badge-size">${sizeStr}</span>
+                    </div>
                 </div>
             `;
         });
@@ -552,10 +575,16 @@ function populateSelectionLists(inventory) {
         dbList.innerHTML = '<div style="font-size:0.8rem; color:#94a3b8;">No databases found.</div>';
     } else {
         inventoryDatabases.forEach((db, idx) => {
+            const name = typeof db === 'object' ? db.name : db;
+            const size = typeof db === 'object' ? db.size : 0;
+            const sizeStr = formatBytes(size);
             dbList.innerHTML += `
                 <div class="tree-option" onclick="toggleOptionCheckbox('database-${idx}')">
-                    <input type="checkbox" id="database-${idx}" class="database-item" data-val="${db}" onchange="updateSummary()" style="cursor:pointer;">
-                    <span>${db}</span>
+                    <input type="checkbox" id="database-${idx}" class="database-item" data-val='${JSON.stringify(db)}' onchange="updateSummary()" style="cursor:pointer;">
+                    <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                        <span>${name}</span>
+                        <span class="badge-size">${sizeStr}</span>
+                    </div>
                 </div>
             `;
         });
@@ -569,10 +598,14 @@ function populateSelectionLists(inventory) {
         uList.innerHTML = '<div style="font-size:0.8rem; color:#94a3b8;">No system users found.</div>';
     } else {
         inventoryUsers.forEach((u, idx) => {
+            const sizeStr = formatBytes(u.size);
             uList.innerHTML += `
                 <div class="tree-option" onclick="toggleOptionCheckbox('user-${idx}')">
                     <input type="checkbox" id="user-${idx}" class="user-item" data-val='${JSON.stringify(u)}' onchange="updateSummary()" style="cursor:pointer;">
-                    <span>${u.username} ${u.is_superuser ? '<small style="color:#3b82f6;font-weight:600;">(Admin)</small>' : ''}</span>
+                    <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                        <span>${u.username} ${u.is_superuser ? '<small style="color:#3b82f6;font-weight:600;">(Admin)</small>' : ''}</span>
+                        <span class="badge-size">${sizeStr}</span>
+                    </div>
                 </div>
             `;
         });
@@ -623,8 +656,32 @@ function updateSummary() {
     const databasesChecked = document.querySelectorAll('.database-item:checked');
     const usersChecked = document.querySelectorAll('.user-item:checked');
 
+    let totalSizeBytes = 0;
+    
+    domainsChecked.forEach(el => {
+        try {
+            const data = JSON.parse(el.getAttribute('data-val'));
+            totalSizeBytes += parseInt(data.size || 0);
+        } catch(e) {}
+    });
+    
+    databasesChecked.forEach(el => {
+        try {
+            const data = JSON.parse(el.getAttribute('data-val'));
+            totalSizeBytes += parseInt(data.size || 0);
+        } catch(e) {}
+    });
+    
+    usersChecked.forEach(el => {
+        try {
+            const data = JSON.parse(el.getAttribute('data-val'));
+            totalSizeBytes += parseInt(data.size || 0);
+        } catch(e) {}
+    });
+
+    const sizeStr = typeof window.formatBytes === 'function' ? window.formatBytes(totalSizeBytes) : '0 B';
     const totalSelected = domainsChecked.length + databasesChecked.length + usersChecked.length;
-    const summaryText = `${totalSelected} item(s) selected: ${domainsChecked.length} webs, ${databasesChecked.length} databases, ${usersChecked.length} users`;
+    const summaryText = `${totalSelected} item(s) selected (${sizeStr}): ${domainsChecked.length} webs, ${databasesChecked.length} databases, ${usersChecked.length} users`;
     
     document.getElementById('selection-summary').textContent = summaryText;
 
@@ -673,7 +730,13 @@ function startReplication() {
 
     const selectedDatabases = [];
     databasesChecked.forEach(el => {
-        selectedDatabases.push(el.getAttribute('data-val'));
+        const val = el.getAttribute('data-val');
+        try {
+            const parsed = JSON.parse(val);
+            selectedDatabases.push(parsed.name);
+        } catch(e) {
+            selectedDatabases.push(val);
+        }
     });
 
     const btn = document.getElementById('btn-start-replication');
