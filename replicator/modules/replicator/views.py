@@ -1303,10 +1303,11 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 log_fp.write("Migrations completed successfully.\n")
             else:
                 err_str = migrate_res.stderr
-                log_fp.write(f"Migration error detected: {err_str.strip()}\n")
+                healed = False
                 
                 # Check for packages/users.0005 table conflict
                 if "packages" in err_str or "pkg_id" in err_str or "users.0005" in err_str:
+                    healed = True
                     # Manually add the missing pkg_id column to users_profile if not present
                     from django.db import connection
                     with connection.cursor() as cursor:
@@ -1332,6 +1333,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 
                 # Check for user_settings/file_manager conflict
                 elif "user_settings" in err_str:
+                    healed = True
                     from django.db import connection
                     with connection.cursor() as cursor:
                         columns_to_add = [
@@ -1360,6 +1362,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                         
                 # Check for apps/users.0006+ conflicts
                 elif any(tbl in err_str for tbl in ["apps", "app_settings", "backup", "bandwidth", "blocked_ip"]):
+                    healed = True
                     fake_res = subprocess.run([python_bin, manage_py, "migrate", "users", "--fake", "--noinput"], capture_output=True, text=True)
                     if fake_res.returncode == 0:
                         log_fp.write("Faked users migrations successfully.\n")
@@ -1370,6 +1373,9 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                             log_fp.write(f"Migration retry failed: {retry_res.stderr.strip()}\n")
                     else:
                         log_fp.write(f"Failed to fake users: {fake_res.stderr.strip()}\n")
+                
+                if not healed:
+                    log_fp.write(f"Migration error detected: {err_str.strip()}\n")
         except Exception as e:
             log_fp.write(f"Warning syncing database migrations: {str(e)}\n")
 
