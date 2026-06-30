@@ -1033,7 +1033,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             if key_path:
                 ssh_rsync_opts += f" -i {key_path}"
 
-            subprocess.run(["rsync", "-avz", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{vhost_src}", vhost_dest])
+            rsync_opts = ["rsync", "-avz"]
+            if ssh_username != 'root':
+                rsync_opts.append("--rsync-path=sudo rsync")
+            rsync_opts += ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{vhost_src}", vhost_dest]
+            
+            subprocess.run(rsync_opts)
             subprocess.run(["chown", "-R", "lsadm:lsadm", vhost_dest])
 
             # Apply virtual host mapping inside destination's httpd_config.conf
