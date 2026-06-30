@@ -179,7 +179,12 @@
         <div id="step-card-3" style="display: none; background: #fff; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.01), 0 2px 4px -1px rgba(0,0,0,0.01); overflow: hidden; transition: all 0.3s ease;">
             <div style="background: rgba(248, 250, 252, 0.8); border-bottom: 1px solid #e2e8f0; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between;">
                 <h5 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #1e293b;">Migration Progress Console</h5>
-                <span id="job-status-badge" class="badge-running">Syncing Assets...</span>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <button id="btn-copy-logs" onclick="copyConsoleLogs()" class="btn-secondary" style="height: 28px; padding: 0 10px; font-size: 0.75rem; border-radius: 3px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid #cbd5e1; background: #fff; color: #334155;">
+                        Copy Logs
+                    </button>
+                    <span id="job-status-badge" class="badge-running">Syncing Assets...</span>
+                </div>
             </div>
             
             <div style="padding: 24px; background: #0f172a; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;">
@@ -875,6 +880,29 @@ function checkJobFinalStatus(jobId) {
                 if (cancelBtn) cancelBtn.style.display = 'inline-block';
             }
         }
+    });
+}
+
+function copyConsoleLogs() {
+    const consoleDiv = document.getElementById('migration-terminal');
+    if (!consoleDiv) return;
+    
+    const textToCopy = consoleDiv.innerText || consoleDiv.textContent;
+    
+    navigator.clipboard.writeText(textToCopy).then(() => {
+        const copyBtn = document.getElementById('btn-copy-logs');
+        const oldText = copyBtn.textContent;
+        copyBtn.textContent = 'Copied!';
+        copyBtn.style.borderColor = '#10b981';
+        copyBtn.style.color = '#10b981';
+        
+        setTimeout(() => {
+            copyBtn.textContent = oldText;
+            copyBtn.style.borderColor = '#cbd5e1';
+            copyBtn.style.color = '#334155';
+        }, 2000);
+    }).catch(err => {
+        alert("Failed to copy logs to clipboard: " + err);
     });
 }
 
