@@ -506,13 +506,24 @@ def start_migration_view(request):
 
     compress_transfer = request.POST.get('compress_transfer') == 'true'
 
-    if not request.session.session_key:
-        request.session.save()
-    session_key = request.session.session_key
+    # Detect and save admin session key (from SeparateAdminSessionMiddleware)
+    admin_session_key = None
+    if hasattr(request, 'admin_session') and request.admin_session:
+        if not request.admin_session.session_key:
+            request.admin_session.save()
+        admin_session_key = request.admin_session.session_key
+
+    # Detect and save user session key (standard Django SessionMiddleware)
+    user_session_key = None
+    if hasattr(request, 'session') and request.session:
+        if not request.session.session_key:
+            request.session.save()
+        user_session_key = request.session.session_key
+
     # Run actual replication asynchronously
     t = threading.Thread(
         target=run_replication_task,
-        args=(job_id, ip, port, username, auth_method, password, ssh_key, selected_users, selected_domains, selected_databases, compress_transfer, log_file, session_key)
+        args=(job_id, ip, port, username, auth_method, password, ssh_key, selected_users, selected_domains, selected_databases, compress_transfer, log_file, admin_session_key, user_session_key)
     )
     t.daemon = True
     t.start()
@@ -629,7 +640,7 @@ def is_job_cancelled(job_id):
     except Exception:
         return False
 
-def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, compress_transfer, log_file, session_key=None):
+def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, compress_transfer, log_file, admin_session_key=None, user_session_key=None):
     """Runs rsync, database dumps, user creations, OLS configurations, and django metadata imports"""
     log_fp = None
     key_path = None
@@ -648,7 +659,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             return False
         log_fp.write(f"Starting Server Replication Job #{job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         log_fp.write(f"Source Server: {ip}:{port}\n")
-        log_fp.write(f"Active Session Key: {session_key}\n")
+        log_fp.write(f"Active Admin Session Key: {admin_session_key}\n")
+        log_fp.write(f"Active User Session Key: {user_session_key}\n")
         log_fp.write(f"Items Selected: {len(users)} users, {len(domains)} domains, {len(databases)} databases\n\n")
 
         # 1. Setup Key File
@@ -1096,22 +1108,38 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # 4b. Replicate Databases
         local_mysql_pass = get_local_mysql_password()
 
-        # Save active admin session from being lost if local panel database gets overwritten
-        session_data_dict = None
-        if session_key:
-            log_fp.write(f"Attempting to back up active session key '{session_key}'...\n")
+        # Save active sessions (admin and user) from being lost if local panel database gets overwritten
+        admin_session_data_dict = None
+        if admin_session_key:
+            log_fp.write(f"Attempting to back up active admin session key '{admin_session_key}'...\n")
             try:
                 from django.contrib.sessions.backends.db import SessionStore
-                s = SessionStore(session_key=session_key)
+                s = SessionStore(session_key=admin_session_key)
                 if s.exists():
-                    session_data_dict = dict(s.items())
-                    log_fp.write(f"Session data backed up successfully. Keys present: {list(session_data_dict.keys())}\n")
+                    admin_session_data_dict = dict(s.items())
+                    log_fp.write(f"Admin session data backed up successfully. Keys present: {list(admin_session_data_dict.keys())}\n")
                 else:
-                    log_fp.write(f"Warning: session '{session_key}' does not exist in database.\n")
+                    log_fp.write(f"Warning: admin session '{admin_session_key}' does not exist in database.\n")
             except Exception as se:
-                log_fp.write(f"Note: failed to capture active session dict: {str(se)}\n")
+                log_fp.write(f"Note: failed to capture active admin session dict: {str(se)}\n")
         else:
-            log_fp.write("No active session key provided. Skipping session backup.\n")
+            log_fp.write("No active admin session key provided. Skipping admin session backup.\n")
+
+        user_session_data_dict = None
+        if user_session_key:
+            log_fp.write(f"Attempting to back up active user session key '{user_session_key}'...\n")
+            try:
+                from django.contrib.sessions.backends.db import SessionStore
+                s = SessionStore(session_key=user_session_key)
+                if s.exists():
+                    user_session_data_dict = dict(s.items())
+                    log_fp.write(f"User session data backed up successfully. Keys present: {list(user_session_data_dict.keys())}\n")
+                else:
+                    log_fp.write(f"Warning: user session '{user_session_key}' does not exist in database.\n")
+            except Exception as se:
+                log_fp.write(f"Note: failed to capture active user session dict: {str(se)}\n")
+        else:
+            log_fp.write("No active user session key provided. Skipping user session backup.\n")
 
         for db_name in databases:
             if check_cancellation("Phase 3 (Database replication)"): return
@@ -1343,39 +1371,78 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         except Exception as e:
             log_fp.write(f"Warning syncing database migrations: {str(e)}\n")
 
+        # Close all current Django connections to clear any stale cache or transaction isolation states
+        try:
+            from django.db import connections
+            for conn in connections.all():
+                conn.close()
+        except Exception as ce:
+            log_fp.write(f"Note: connection close warning: {str(ce)}\n")
+
         # Restore active admin session to the panel database if it was overwritten
-        if session_key and session_data_dict:
-            log_fp.write(f"Attempting to restore active session key '{session_key}'...\n")
+        if admin_session_key and admin_session_data_dict:
+            log_fp.write(f"Attempting to restore active admin session key '{admin_session_key}'...\n")
             try:
                 from django.contrib.sessions.backends.db import SessionStore
                 from django.contrib.auth import get_user_model
                 
-                # Close all current Django connections to clear any stale cache or transaction isolation states
-                from django.db import connections
-                for conn in connections.all():
-                    conn.close()
-                
                 User = get_user_model()
-                # Get user ID from session dict
-                user_id = session_data_dict.get('_auth_user_id')
+                user_id = admin_session_data_dict.get('_auth_user_id')
+                user = None
                 if user_id:
                     user = User.objects.filter(id=user_id).first()
+                if not user:
+                    # Fallback to username 'admin' or first superuser if ID differs/missing
+                    user = User.objects.filter(username='admin').first() or User.objects.filter(is_superuser=True).first()
                     if user:
-                        # Update the session auth hash to match the imported user's password hash to prevent Django invalidating the session
-                        session_data_dict['_auth_user_hash'] = user.get_session_auth_hash()
-                        log_fp.write(f"Recalculated session auth hash for user ID {user_id}.\n")
+                        admin_session_data_dict['_auth_user_id'] = str(user.id)
+                        log_fp.write(f"Mapped session user ID to active admin ID: {user.id}\n")
                 
-                # Save the updated session using Django's SessionStore backend
-                s_new = SessionStore(session_key=session_key)
+                if user:
+                    admin_session_data_dict['_auth_user_hash'] = user.get_session_auth_hash()
+                    log_fp.write("Recalculated session authentication hash for admin session.\n")
+                
+                s_new = SessionStore(session_key=admin_session_key)
                 s_new.clear()
-                for k, v in session_data_dict.items():
+                for k, v in admin_session_data_dict.items():
                     s_new[k] = v
                 s_new.save()
-                log_fp.write("Preserved and authenticated active admin session successfully. You will remain logged in.\n")
+                log_fp.write("Preserved and authenticated active admin session successfully.\n")
             except Exception as se:
                 log_fp.write(f"Warning restoring active admin session: {str(se)}\n")
         else:
-            log_fp.write("Skipping session restore because session key or backup dict is missing.\n")
+            log_fp.write("Skipping admin session restore (not active or missing backup).\n")
+
+        # Restore active user session to the panel database if it was overwritten
+        if user_session_key and user_session_data_dict:
+            log_fp.write(f"Attempting to restore active user session key '{user_session_key}'...\n")
+            try:
+                from django.contrib.sessions.backends.db import SessionStore
+                from django.contrib.auth import get_user_model
+                
+                User = get_user_model()
+                user_id = user_session_data_dict.get('_auth_user_id')
+                user = None
+                if user_id:
+                    user = User.objects.filter(id=user_id).first()
+                if not user:
+                    user = User.objects.filter(username='admin').first() or User.objects.filter(is_superuser=True).first()
+                    if user:
+                        user_session_data_dict['_auth_user_id'] = str(user.id)
+                
+                if user:
+                    user_session_data_dict['_auth_user_hash'] = user.get_session_auth_hash()
+                
+                s_new = SessionStore(session_key=user_session_key)
+                s_new.clear()
+                for k, v in user_session_data_dict.items():
+                    s_new[k] = v
+                s_new.save()
+                log_fp.write("Preserved and authenticated active user session successfully.\n")
+            except Exception as se:
+                log_fp.write(f"Warning restoring active user session: {str(se)}\n")
+        else:
+            log_fp.write("Skipping user session restore (not active or missing backup).\n")
 
         # Reload OpenLiteSpeed to apply configurations
         log_fp.write("\nReloading OpenLiteSpeed web server...\n")
