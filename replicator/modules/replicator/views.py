@@ -730,6 +730,10 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 else:
                     log_fp.write(f"Successfully created system user '{username}'.\n")
 
+            # Ensure OLS traversal permissions for home directory (711)
+            if os.path.exists(home_dir):
+                subprocess.run(["chmod", "711", home_dir])
+
             # Sync user Django metadata
             try:
                 django_user, created = User.objects.get_or_create(
@@ -857,9 +861,18 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 if ssh_username != 'root':
                     rsync_ssl_args += ["--rsync-path=sudo rsync"]
 
-                subprocess.run(rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/live/{domain_name}/", f"/etc/letsencrypt/live/{domain_name}/"])
-                subprocess.run(rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/archive/{domain_name}/", f"/etc/letsencrypt/archive/{domain_name}/"])
-                subprocess.run(rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/renewal/{domain_name}.conf", f"/etc/letsencrypt/renewal/{domain_name}.conf"])
+                cmd_live = rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/live/{domain_name}/", f"/etc/letsencrypt/live/{domain_name}/"]
+                cmd_archive = rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/archive/{domain_name}/", f"/etc/letsencrypt/archive/{domain_name}/"]
+                cmd_renewal = rsync_ssl_args + ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:/etc/letsencrypt/renewal/{domain_name}.conf", f"/etc/letsencrypt/renewal/{domain_name}.conf"]
+
+                if auth_method == 'password':
+                    cmd_live = ["sshpass", "-e"] + cmd_live
+                    cmd_archive = ["sshpass", "-e"] + cmd_archive
+                    cmd_renewal = ["sshpass", "-e"] + cmd_renewal
+
+                subprocess.run(cmd_live, env=env)
+                subprocess.run(cmd_archive, env=env)
+                subprocess.run(cmd_renewal, env=env)
                 
                 # Fix symlinks inside letsencrypt/live/ which might be broken by rsync
                 # Usually they point relatively to ../../archive/domain/file.pem
