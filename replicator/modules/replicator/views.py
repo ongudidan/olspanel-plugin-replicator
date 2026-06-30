@@ -221,13 +221,21 @@ inventory = {
 # 1. Fetch MySQL databases directly using system call (runs as root under sudo)
 import subprocess
 mysql_pass = None
-pass_file = os.path.join(base_dir, "etc/mysqlPassword")
-if os.path.exists(pass_file):
-    try:
-        with open(pass_file, "r") as f:
-            mysql_pass = f.read().strip()
-    except Exception:
-        pass
+pass_files = [
+    os.path.join(base_dir, "etc/mysqlPassword"),
+    "/usr/local/olspanel/mypanel/etc/mysqlPassword",
+    "/usr/local/lsws/Example/html/mypanel/etc/mysqlPassword",
+    "/etc/olspanel/mysqlPassword"
+]
+for pf in pass_files:
+    if os.path.exists(pf):
+        try:
+            with open(pf, "r") as f:
+                mysql_pass = f.read().strip()
+                if mysql_pass:
+                    break
+        except Exception:
+            pass
 
 try:
     mysql_cmd = ["mysql", "-u", "root"]
@@ -241,8 +249,10 @@ try:
             db_name = line.strip()
             if db_name and db_name not in ['information_schema', 'mysql', 'performance_schema', 'sys']:
                 inventory['databases'].append(db_name)
-except Exception:
-    pass
+    else:
+        inventory['db_error'] = res.stderr
+except Exception as e:
+    inventory['db_error'] = str(e)
 
 try:
     import django
@@ -755,11 +765,23 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # 4a. Replicate MySQL database users and grants
         log_fp.write("👥 Fetching database users and grants from source...\n")
         
-        # Fetch remote MySQL password from the remote server's configuration file
+        # Fetch remote MySQL base directory dynamically
+        remote_base_dir = "/usr/local/olspanel/mypanel"
+        dir_res = run_ssh_command("sudo cat /etc/olspanel/base_dir")
+        if dir_res.returncode == 0 and dir_res.stdout.strip():
+            remote_base_dir = dir_res.stdout.strip()
+            
+        # Fetch remote MySQL password from the remote server's configuration file (checking multiple version paths)
         remote_mysql_pass = ""
-        mysql_pass_res = run_ssh_command("sudo cat /usr/local/olspanel/mypanel/etc/mysqlPassword")
-        if mysql_pass_res.returncode == 0:
-            remote_mysql_pass = mysql_pass_res.stdout.strip()
+        for remote_pf in [
+            f"{remote_base_dir}/etc/mysqlPassword",
+            "/usr/local/olspanel/mypanel/etc/mysqlPassword",
+            "/usr/local/lsws/Example/html/mypanel/etc/mysqlPassword"
+        ]:
+            mysql_pass_res = run_ssh_command(f"sudo cat {remote_pf}")
+            if mysql_pass_res.returncode == 0 and mysql_pass_res.stdout.strip():
+                remote_mysql_pass = mysql_pass_res.stdout.strip()
+                break
             
         mysql_remote_auth = "mysql -u root"
         if remote_mysql_pass:
