@@ -229,6 +229,58 @@ def get_dir_size(path):
         pass
     return 0
 
+# Helper to dynamically resolve true owner and path for domains
+def resolve_domain_owner_and_path(domain_name, database_owner, database_path, system_users):
+    owner = database_owner
+    path = database_path
+    
+    if owner in ['root', 'nobody', 'lsadm']:
+        # 1. Match by username inside the domain name (e.g. deltamarkethub.co.ke -> deltamarkethub)
+        matched_user = None
+        for u in system_users:
+            if u in domain_name:
+                matched_user = u
+                break
+        
+        # 2. Check path existence on source disk
+        users_to_check = [matched_user] if matched_user else system_users
+        found = False
+        for u in users_to_check:
+            if not u or u in ['root', 'nobody', 'lsadm']:
+                continue
+            for p in [f"/home/{u}/{domain_name}", f"/home/{u}/public_html", f"/home/{u}/public_htm"]:
+                if os.path.exists(p):
+                    owner = u
+                    path = p
+                    found = True
+                    break
+            if found:
+                break
+        
+        if not found:
+            for u in system_users:
+                if u in ['root', 'nobody', 'lsadm']:
+                    continue
+                for p in [f"/home/{u}/{domain_name}", f"/home/{u}/public_html", f"/home/{u}/public_htm"]:
+                    if os.path.exists(p):
+                        owner = u
+                        path = p
+                        found = True
+                        break
+                if found:
+                    break
+
+    # If owner is valid, but path points to root config paths or is unset, rewrite to true home path
+    if owner not in ['root', 'nobody', 'lsadm']:
+        if not path or path.startswith('/home/root') or path.startswith('/home/nobody') or not path.startswith('/home/'):
+            path = f"/home/{owner}/{domain_name}"
+            if os.path.exists(f"/home/{owner}/public_html"):
+                path = f"/home/{owner}/public_html"
+            elif os.path.exists(f"/home/{owner}/public_htm"):
+                path = f"/home/{owner}/public_htm"
+                
+    return owner, path
+
 # 1. Fetch MySQL databases directly using system call (runs as root under sudo)
 mysql_pass = None
 pass_files = [
@@ -306,31 +358,19 @@ try:
             'size': size
         })
 
+    # Gather usernames
+    system_users_list = [u.username for u in User.objects.all()]
+
     # Get domains
     for d in Domain.objects.select_related('userid').all():
-        owner = d.userid.username if d.userid else 'nobody'
-        
-        # Self-healing: if owner is nobody or root, parse it from /home/ path or disk owner
-        if owner in ['nobody', 'root']:
-            if d.path and d.path.startswith('/home/'):
-                parts = d.path.split('/')
-                if len(parts) > 2:
-                    owner = parts[2]
-            
-            # If still unresolved, look up disk owner of the folder
-            if owner in ['nobody', 'root'] and d.path and os.path.exists(d.path):
-                try:
-                    import pwd
-                    stat_info = os.stat(d.path)
-                    owner = pwd.getpwuid(stat_info.st_uid).pw_name
-                except Exception:
-                    pass
+        db_owner = d.userid.username if d.userid else 'nobody'
+        owner, path = resolve_domain_owner_and_path(d.domain, db_owner, d.path, system_users_list)
 
-        size = get_dir_size(d.path) if d.path and os.path.exists(d.path) else 0
+        size = get_dir_size(path) if path and os.path.exists(path) else 0
         inventory['domains'].append({
             'domain': d.domain,
             'username': owner,
-            'path': d.path,
+            'path': path,
             'size': size
         })
 
@@ -368,12 +408,13 @@ except Exception as e:
                                 owner = u
                                 break
                     
-                    doc_root = f'/home/{owner}/{d}'
+                    # Resolve path
+                    owner, path = resolve_domain_owner_and_path(d, owner, f'/home/{owner}/{d}', users)
                     inventory['domains'].append({
                         'domain': d, 
                         'username': owner, 
-                        'path': doc_root,
-                        'size': get_dir_size(doc_root)
+                        'path': path,
+                        'size': get_dir_size(path)
                     })
         
         print(json.dumps({'status': 'success', 'inventory': inventory, 'fallback': True, 'error': str(e)}))
@@ -724,8 +765,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 log_fp.write(f"Skipping file transfer: directory '{source_path}' does not exist on source server.\n")
                 continue
             
-            # Resolve destination path
+            # Resolve destination path dynamically matching source folder configuration
             dest_path = f"/home/{owner}/{domain_name}"
+            if source_path.endswith('/public_html'):
+                dest_path = f"/home/{owner}/public_html"
+            elif source_path.endswith('/public_htm'):
+                dest_path = f"/home/{owner}/public_htm"
             # Ensure parent directories exist
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
@@ -949,7 +994,13 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             if check_cancellation("Phase 4 (OLS Config sync)"): return
             domain_name = d.get('domain')
             owner = d.get('username')
+            # Resolve doc_root path dynamically matching source structure
             doc_root = f"/home/{owner}/{domain_name}"
+            source_path = d.get('path', f'/home/{owner}/{domain_name}')
+            if source_path.endswith('/public_html'):
+                doc_root = f"/home/{owner}/public_html"
+            elif source_path.endswith('/public_htm'):
+                doc_root = f"/home/{owner}/public_htm"
 
             log_fp.write(f"Synchronizing OLS Vhost configurations for '{domain_name}'...\n")
             
