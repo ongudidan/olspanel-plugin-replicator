@@ -23,6 +23,17 @@ if not os.path.exists(LOG_DIR):
     except Exception:
         pass
 
+def get_local_mysql_password():
+    """Reads the local MySQL root password from OLSPanel configuration file"""
+    pass_file = "/usr/local/olspanel/mypanel/etc/mysqlPassword"
+    if os.path.exists(pass_file):
+        try:
+            with open(pass_file, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return None
+
 def get_authenticated_user(request):
     """Retrieves authenticated admin, respecting impersonation"""
     if hasattr(request, 'admin_user') and request.admin_user:
@@ -687,8 +698,18 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # 4a. Replicate MySQL database users and grants
         log_fp.write("👥 Fetching database users and grants from source...\n")
         
-        # Script to output Grants statement with passwords (use sudo to access socket auth-linked mysql)
-        grants_dump_cmd = "sudo mysql -u root -B -N -e \"SELECT DISTINCT CONCAT('SHOW GRANTS FOR \'', User, '\'@\'', Host, '\';') FROM mysql.user WHERE User NOT IN ('root', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'mariadb.sys', 'debian-sys-maint');\""
+        # Fetch remote MySQL password from the remote server's configuration file
+        remote_mysql_pass = ""
+        mysql_pass_res = run_ssh_command("sudo cat /usr/local/olspanel/mypanel/etc/mysqlPassword")
+        if mysql_pass_res.returncode == 0:
+            remote_mysql_pass = mysql_pass_res.stdout.strip()
+            
+        mysql_remote_auth = "mysql -u root"
+        if remote_mysql_pass:
+            mysql_remote_auth += f" -p'{remote_mysql_pass}'"
+        
+        # Script to output Grants statement with passwords (use sudo to access socket/password-linked mysql)
+        grants_dump_cmd = f"sudo {mysql_remote_auth} -B -N -e \"SELECT DISTINCT CONCAT('SHOW GRANTS FOR \\'', User, '\\'@\\'', Host, '\\';') FROM mysql.user WHERE User NOT IN ('root', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'mariadb.sys', 'debian-sys-maint');\""
         grants_list_res = run_ssh_command(grants_dump_cmd)
         
         if grants_list_res.returncode == 0:
@@ -696,7 +717,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             for show_grant_cmd in grants_list_res.stdout.strip().split('\n'):
                 if show_grant_cmd.strip():
                     # Run SQL command via remote mysql using sudo
-                    grant_val_res = run_ssh_command(f"sudo mysql -u root -B -N -e \"{show_grant_cmd}\"")
+                    grant_val_res = run_ssh_command(f"sudo {mysql_remote_auth} -B -N -e \"{show_grant_cmd}\"")
                     if grant_val_res.returncode == 0:
                         for grant_line in grant_val_res.stdout.strip().split('\n'):
                             if grant_line:
@@ -712,7 +733,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     with open(sql_temp_path, "w") as sql_f:
                         sql_f.write(grants_sql)
                     
-                    restore_grants_res = subprocess.run(f"mysql < {sql_temp_path}", shell=True, capture_output=True, text=True)
+                    local_mysql_pass = get_local_mysql_password()
+                    local_mysql_auth = "mysql -u root"
+                    if local_mysql_pass:
+                        local_mysql_auth += f" -p'{local_mysql_pass}'"
+                        
+                    restore_grants_res = subprocess.run(f"{local_mysql_auth} < {sql_temp_path}", shell=True, capture_output=True, text=True)
                     if restore_grants_res.returncode == 0:
                         log_fp.write("🟢 Database user credentials synced successfully.\n")
                     else:
@@ -733,13 +759,18 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             log_fp.write("⚠️ Could not read MySQL user list from source. Database connections may require manual setups if database users differ from site users.\n")
 
         # 4b. Replicate Databases
+        local_mysql_pass = get_local_mysql_password()
         for db_name in databases:
             if check_cancellation("Phase 3 (Database replication)"): return
             log_fp.write(f"🗄️ Replicating database '{db_name}'...\n")
             log_fp.write(f"⚠️ WARNING: This will overwrite/drop local tables in '{db_name}'. If the site is already live here, it may experience temporary query errors during the import.\n")
             
             # Create local MySQL db
-            subprocess.run(["mysql", "-e", f"CREATE DATABASE IF NOT EXISTS {db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"])
+            create_db_cmd = ["mysql", "-u", "root"]
+            if local_mysql_pass:
+                create_db_cmd += [f"-p{local_mysql_pass}"]
+            create_db_cmd += ["-e", f"CREATE DATABASE IF NOT EXISTS {db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"]
+            subprocess.run(create_db_cmd)
 
             # Dump from source and pipe straight to destination MySQL
             ssh_dump_opts = "ssh"
@@ -749,7 +780,18 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 ssh_dump_opts = f"sshpass -e ssh -p {port} -o StrictHostKeyChecking=no"
 
             mysqldump_bin = "sudo mysqldump" if ssh_username != 'root' else "mysqldump"
-            dump_restore_cmd = f"{ssh_dump_opts} {ssh_username}@{ip} '{mysqldump_bin} --single-transaction {db_name}' | mysql {db_name}"
+            
+            remote_mysqldump_cmd = f"{mysqldump_bin} -u root"
+            if remote_mysql_pass:
+                remote_mysqldump_cmd += f" -p'{remote_mysql_pass}'"
+            remote_mysqldump_cmd += f" --single-transaction {db_name}"
+            
+            local_mysql_cmd = "mysql -u root"
+            if local_mysql_pass:
+                local_mysql_cmd += f" -p'{local_mysql_pass}'"
+            local_mysql_cmd += f" {db_name}"
+
+            dump_restore_cmd = f"{ssh_dump_opts} {ssh_username}@{ip} '{remote_mysqldump_cmd}' | {local_mysql_cmd}"
             
             log_fp.write("⚡ Streaming dump & restore pipeline...\n")
             try:
