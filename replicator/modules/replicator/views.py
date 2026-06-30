@@ -194,7 +194,7 @@ import subprocess
 try:
     res = subprocess.run(["mysql", "-u", "root", "-B", "-N", "-e", "SHOW DATABASES"], capture_output=True, text=True)
     if res.returncode == 0:
-        for line in res.stdout.strip().split('\n'):
+        for line in res.stdout.strip().split('\\n'):
             db_name = line.strip()
             if db_name and db_name not in ['information_schema', 'mysql', 'performance_schema', 'sys']:
                 inventory['databases'].append(db_name)
@@ -221,6 +221,16 @@ try:
     # Get domains
     for d in Domain.objects.select_related('userid').all():
         owner = d.userid.username if d.userid else 'nobody'
+        
+        # Self-healing: if owner is nobody, look up disk owner on the remote server
+        if owner == 'nobody' and d.path and os.path.exists(d.path):
+            try:
+                import pwd
+                stat_info = os.stat(d.path)
+                owner = pwd.getpwuid(stat_info.st_uid).pw_name
+            except Exception:
+                pass
+
         inventory['domains'].append({
             'domain': d.domain,
             'username': owner,
