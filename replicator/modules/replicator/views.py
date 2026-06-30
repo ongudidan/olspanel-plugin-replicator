@@ -506,6 +506,8 @@ def start_migration_view(request):
 
     compress_transfer = request.POST.get('compress_transfer') == 'true'
 
+    if not request.session.session_key:
+        request.session.save()
     session_key = request.session.session_key
     # Run actual replication asynchronously
     t = threading.Thread(
@@ -646,6 +648,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             return False
         log_fp.write(f"Starting Server Replication Job #{job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         log_fp.write(f"Source Server: {ip}:{port}\n")
+        log_fp.write(f"Active Session Key: {session_key}\n")
         log_fp.write(f"Items Selected: {len(users)} users, {len(domains)} domains, {len(databases)} databases\n\n")
 
         # 1. Setup Key File
@@ -1096,13 +1099,19 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # Save active admin session from being lost if local panel database gets overwritten
         session_data_dict = None
         if session_key:
+            log_fp.write(f"Attempting to back up active session key '{session_key}'...\n")
             try:
                 from django.contrib.sessions.backends.db import SessionStore
                 s = SessionStore(session_key=session_key)
                 if s.exists():
                     session_data_dict = dict(s.items())
+                    log_fp.write(f"Session data backed up successfully. Keys present: {list(session_data_dict.keys())}\n")
+                else:
+                    log_fp.write(f"Warning: session '{session_key}' does not exist in database.\n")
             except Exception as se:
                 log_fp.write(f"Note: failed to capture active session dict: {str(se)}\n")
+        else:
+            log_fp.write("No active session key provided. Skipping session backup.\n")
 
         for db_name in databases:
             if check_cancellation("Phase 3 (Database replication)"): return
@@ -1336,6 +1345,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
         # Restore active admin session to the panel database if it was overwritten
         if session_key and session_data_dict:
+            log_fp.write(f"Attempting to restore active session key '{session_key}'...\n")
             try:
                 from django.contrib.sessions.backends.db import SessionStore
                 from django.contrib.auth import get_user_model
@@ -1353,6 +1363,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     if user:
                         # Update the session auth hash to match the imported user's password hash to prevent Django invalidating the session
                         session_data_dict['_auth_user_hash'] = user.get_session_auth_hash()
+                        log_fp.write(f"Recalculated session auth hash for user ID {user_id}.\n")
                 
                 # Save the updated session using Django's SessionStore backend
                 s_new = SessionStore(session_key=session_key)
@@ -1363,6 +1374,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 log_fp.write("Preserved and authenticated active admin session successfully. You will remain logged in.\n")
             except Exception as se:
                 log_fp.write(f"Warning restoring active admin session: {str(se)}\n")
+        else:
+            log_fp.write("Skipping session restore because session key or backup dict is missing.\n")
 
         # Reload OpenLiteSpeed to apply configurations
         log_fp.write("\nReloading OpenLiteSpeed web server...\n")
