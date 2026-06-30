@@ -851,6 +851,19 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             ssl_res = run_ssh_command(ssl_check_cmd)
             if 'SSL_EXISTS' in ssl_res.stdout:
                 log_fp.write(f"Copying Let's Encrypt SSL folders for '{domain_name}'...\n")
+                
+                # Delete existing directories/symlinks to avoid rsync write conflicts
+                import shutil
+                for local_dir in [f"/etc/letsencrypt/live/{domain_name}", f"/etc/letsencrypt/archive/{domain_name}"]:
+                    if os.path.exists(local_dir) or os.path.islink(local_dir):
+                        try:
+                            if os.path.islink(local_dir):
+                                os.unlink(local_dir)
+                            else:
+                                shutil.rmtree(local_dir)
+                        except Exception as de:
+                            log_fp.write(f"Warning clearing directory {local_dir}: {str(de)}\n")
+
                 # Create local SSL directories
                 os.makedirs(f"/etc/letsencrypt/live/{domain_name}", exist_ok=True)
                 os.makedirs(f"/etc/letsencrypt/archive/{domain_name}", exist_ok=True)
