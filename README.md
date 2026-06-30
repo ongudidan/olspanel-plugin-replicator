@@ -5,6 +5,8 @@ An official plugin for **OLSPanel** to easily duplicate/replicate a remote OLSPa
 ## Features
 - **Pull Migration Model**: Initiated directly from the fresh destination server, ensuring maximum reliability and resource isolation.
 - **System Accounts Replication**: Fetches remote users, homes, shells, and shadow encrypted password hashes, recreating the Linux users on the local machine automatically.
+- **Dynamic PHP & Node.js Auto-Provisioning (Phase 1b)**: Detects installed LiteSpeed PHP versions and modules (e.g. `lsphp` / `ls-php` packages) and Node.js major versions (e.g. `20`, `24`) on the source server, and automatically updates and installs them on the target server.
+- **Cross-Distro Package Mapping**: Seamlessly translates package prefixes and package managers across supported OS families (e.g., mapping `ls-php` $\leftrightarrow$ `lsphp` and dnf/yum $\leftrightarrow$ apt) when migrating between Debian/Ubuntu and CentOS/AlmaLinux/Rocky.
 - **Rsync File Transfers**: Uses fast, block-level differential `rsync` over SSH to copy web directory contents and Let's Encrypt SSL certificates.
 - **Database Replicator**: Automates `mysqldump` and database user grant replication, cloning databases without manual credential matching.
 - **Automatic OLS Mapping**: Appends virtual host config declarations to the destination's master `httpd_config.conf` listener blocks, registering them in OpenLiteSpeed instantly.
