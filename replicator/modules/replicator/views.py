@@ -596,20 +596,20 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             # Run rsync
             rsync_proc = subprocess.Popen(rsync_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             
-            # Print a status tick every 5 seconds so the user console shows heartbeat activity
+            # Print a status tick and check cancellation every 5 seconds
             last_tick = time.time()
             while rsync_proc.poll() is None:
-                if is_job_cancelled(job_id):
-                    log_fp.write("\n❌ Migration cancelled. Terminating active rsync process...\n")
-                    rsync_proc.terminate()
-                    rsync_proc.wait()
-                    if key_path and os.path.exists(key_path):
-                        try:
-                            os.remove(key_path)
-                        except Exception:
-                            pass
-                    return
                 if time.time() - last_tick >= 5:
+                    if is_job_cancelled(job_id):
+                        log_fp.write("\n❌ Migration cancelled. Terminating active rsync process...\n")
+                        rsync_proc.terminate()
+                        rsync_proc.wait()
+                        if key_path and os.path.exists(key_path):
+                            try:
+                                os.remove(key_path)
+                            except Exception:
+                                pass
+                        return
                     log_fp.write(".")
                     last_tick = time.time()
                 time.sleep(0.5)
