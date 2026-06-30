@@ -278,9 +278,11 @@ except Exception as e:
     try:
         ssh_args = build_ssh_args(ip, port, username, password if auth_method == 'password' else None, key_path)
         # Execute python within the OLSPanel virtual environment if available, otherwise fallback to system python3
-        py_selector = "if [ -f /root/venv/bin/python ]; then /root/venv/bin/python; else python3; fi"
-        remote_py_cmd = ["sudo", "bash", "-c", py_selector] if username != 'root' else ["bash", "-c", py_selector]
-        cmd = ["ssh"] + ssh_args + [f"{username}@{ip}"] + remote_py_cmd
+        if username != 'root':
+            py_selector = "if [ -f /root/venv/bin/python ]; then sudo /root/venv/bin/python; else sudo python3; fi"
+        else:
+            py_selector = "if [ -f /root/venv/bin/python ]; then /root/venv/bin/python; else python3; fi"
+        cmd = ["ssh"] + ssh_args + [f"{username}@{ip}", py_selector]
         
         env = os.environ.copy()
         if auth_method == 'password':
