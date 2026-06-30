@@ -775,8 +775,31 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         log_fp.write("==================================================\n")
         
         try:
-            log_fp.write("Checking installed lsphp packages on source server...\n")
-            pkg_cmd = "dpkg-query -f '${binary:Package}\\n' -W 'lsphp*'"
+            # Detect remote OS package manager
+            log_fp.write("Detecting package manager on source server...\n")
+            remote_is_rhel = False
+            rpm_check = run_ssh_command("which rpm")
+            if rpm_check.returncode == 0:
+                remote_is_rhel = True
+                log_fp.write("Source server detected as RHEL-based (CentOS/AlmaLinux/Rocky).\n")
+            else:
+                log_fp.write("Source server detected as Debian/Ubuntu-based.\n")
+
+            # Detect local OS package manager
+            local_is_rhel = False
+            if os.path.exists('/usr/bin/dnf') or os.path.exists('/usr/bin/yum') or os.path.exists('/usr/sbin/dnf'):
+                local_is_rhel = True
+                log_fp.write("Destination server detected as RHEL-based (CentOS/AlmaLinux/Rocky).\n")
+            else:
+                log_fp.write("Destination server detected as Debian/Ubuntu-based.\n")
+
+            # Fetch packages from source
+            if remote_is_rhel:
+                pkg_cmd = "rpm -qa --qf '%{NAME}\\n' 'ls-php*'"
+            else:
+                pkg_cmd = "dpkg-query -f '${binary:Package}\\n' -W 'lsphp*'"
+            
+            log_fp.write("Checking installed PHP packages on source server...\n")
             pkg_res = run_ssh_command(pkg_cmd)
             
             packages_to_install = []
@@ -784,22 +807,34 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 for line in pkg_res.stdout.splitlines():
                     line = line.strip()
                     if line and not line.startswith('dpkg-query:') and 'dpkg-query:' not in line:
+                        # Convert package names if source and destination OS types differ
+                        if remote_is_rhel and not local_is_rhel:
+                            # Convert e.g. ls-php81-mysql to lsphp81-mysql
+                            line = line.replace('ls-php', 'lsphp')
+                        elif not remote_is_rhel and local_is_rhel:
+                            # Convert e.g. lsphp81-mysql to ls-php81-mysql
+                            line = line.replace('lsphp', 'ls-php')
                         packages_to_install.append(line)
             
             if packages_to_install:
-                log_fp.write(f"Found {len(packages_to_install)} lsphp packages on source: {', '.join(packages_to_install)}\n")
-                log_fp.write("Running apt-get update locally on destination server...\n")
-                subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
-                
-                log_fp.write("Installing matching PHP packages locally...\n")
-                install_cmd = ["sudo", "apt-get", "install", "-y"] + packages_to_install
+                log_fp.write(f"Found {len(packages_to_install)} PHP packages to sync: {', '.join(packages_to_install)}\n")
+                if local_is_rhel:
+                    log_fp.write("Installing PHP packages locally via dnf/yum...\n")
+                    pm_bin = "dnf" if os.path.exists('/usr/bin/dnf') or os.path.exists('/usr/sbin/dnf') else "yum"
+                    install_cmd = ["sudo", pm_bin, "install", "-y"] + packages_to_install
+                else:
+                    log_fp.write("Running apt-get update locally on destination server...\n")
+                    subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
+                    log_fp.write("Installing PHP packages locally via apt...\n")
+                    install_cmd = ["sudo", "apt-get", "install", "-y"] + packages_to_install
+
                 inst_res = subprocess.run(install_cmd, capture_output=True, text=True)
                 if inst_res.returncode == 0:
                     log_fp.write("PHP packages and extensions successfully synchronized.\n")
                 else:
                     log_fp.write(f"Warning: Some PHP packages failed to install: {inst_res.stderr.strip()}\n")
             else:
-                log_fp.write("No lsphp packages found on the source server.\n")
+                log_fp.write("No LiteSpeed PHP packages found on the source server.\n")
         except Exception as e:
             log_fp.write(f"Warning synchronizing PHP packages: {str(e)}\n")
 
