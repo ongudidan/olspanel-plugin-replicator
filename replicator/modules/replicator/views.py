@@ -1205,79 +1205,88 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         # Self-healing Django migrations handler
         log_fp.write("\nSyncing panel database migrations & running self-healer...\n")
         try:
-            from django.core.management import call_command
-            
-            try:
-                # Pre-emptively generate missing migration files for file_manager
-                call_command('makemigrations', 'file_manager', interactive=False)
-            except Exception as me:
-                log_fp.write(f"Note: makemigrations file_manager: {str(me)}\n")
+            # We run migrations in a separate subprocess to avoid Django thread deadlocks or connection pooling conflicts
+            python_bin = "/root/venv/bin/python" if os.path.exists("/root/venv/bin/python") else "python3"
+            manage_py = "/usr/local/olspanel/mypanel/manage.py"
+            if not os.path.exists(manage_py):
+                manage_py = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "manage.py")
 
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    call_command('migrate', interactive=False)
-                    log_fp.write("Migrations completed successfully.\n")
-                    break
-                except Exception as migrate_err:
-                    err_str = str(migrate_err)
-                    log_fp.write(f"Migration conflict or error detected (attempt {attempt + 1}): {err_str}\n")
+            # Pre-emptively generate missing migration files for file_manager
+            subprocess.run([python_bin, manage_py, "makemigrations", "file_manager", "--noinput"], capture_output=True)
+
+            # Try normal migrate
+            migrate_res = subprocess.run([python_bin, manage_py, "migrate", "--noinput"], capture_output=True, text=True)
+            if migrate_res.returncode == 0:
+                log_fp.write("Migrations completed successfully.\n")
+            else:
+                err_str = migrate_res.stderr
+                log_fp.write(f"Migration error detected: {err_str.strip()}\n")
+                
+                # Check for packages/users.0005 table conflict
+                if "packages" in err_str or "pkg_id" in err_str or "users.0005" in err_str:
+                    # Manually add the missing pkg_id column to users_profile if not present
+                    from django.db import connection
+                    with connection.cursor() as cursor:
+                        try:
+                            cursor.execute("ALTER TABLE users_profile ADD COLUMN pkg_id INT DEFAULT NULL;")
+                            log_fp.write("Successfully added missing 'pkg_id' column to 'users_profile' table.\n")
+                        except Exception:
+                            pass
                     
-                    resolved = False
-                    
-                    # Case A: users_profile / packages / users.0005 conflict
-                    if "packages" in err_str or "pkg_id" in err_str or "users.0005" in err_str:
-                        # Manually add the missing pkg_id column to users_profile if not present
-                        with connection.cursor() as cursor:
+                    # Fake migrate users 0005
+                    log_fp.write("Faking migration 'users.0005_package_profile_pkg_id_domain_dns_record'...\n")
+                    fake_res = subprocess.run([python_bin, manage_py, "migrate", "users", "0005_package_profile_pkg_id_domain_dns_record", "--fake", "--noinput"], capture_output=True, text=True)
+                    if fake_res.returncode == 0:
+                        log_fp.write("Faked users.0005 successfully.\n")
+                        # Retry general migrate
+                        retry_res = subprocess.run([python_bin, manage_py, "migrate", "--noinput"], capture_output=True, text=True)
+                        if retry_res.returncode == 0:
+                            log_fp.write("Migrations successfully resolved and completed.\n")
+                        else:
+                            log_fp.write(f"Migration retry failed: {retry_res.stderr.strip()}\n")
+                    else:
+                        log_fp.write(f"Failed to fake users.0005: {fake_res.stderr.strip()}\n")
+                
+                # Check for user_settings/file_manager conflict
+                elif "user_settings" in err_str:
+                    from django.db import connection
+                    with connection.cursor() as cursor:
+                        columns_to_add = [
+                            "hour_maximum_backup INT DEFAULT 24",
+                            "day_maximum_backup INT DEFAULT 100",
+                            "week_maximum_backup INT DEFAULT 50",
+                            "month_maximum_backup INT DEFAULT 12"
+                        ]
+                        for col in columns_to_add:
                             try:
-                                cursor.execute("ALTER TABLE users_profile ADD COLUMN pkg_id INT DEFAULT NULL;")
-                                log_fp.write("Successfully added missing 'pkg_id' column to 'users_profile' table.\n")
+                                cursor.execute(f"ALTER TABLE user_settings ADD COLUMN {col};")
+                                log_fp.write(f"Added missing user_settings column: {col}\n")
                             except Exception:
                                 pass
-                        try:
-                            call_command('migrate', 'users', '0005', fake=True, interactive=False)
-                            log_fp.write("Faked conflicting migration 'users.0005'.\n")
-                            resolved = True
-                        except Exception as fe:
-                            log_fp.write(f"Failed to fake users.0005: {str(fe)}\n")
                     
-                    # Case B: user_settings already exists / file_manager conflict
-                    if "user_settings" in err_str:
-                        # Manually add the missing columns to user_settings table
-                        with connection.cursor() as cursor:
-                            columns_to_add = [
-                                "hour_maximum_backup INT DEFAULT 24",
-                                "day_maximum_backup INT DEFAULT 100",
-                                "week_maximum_backup INT DEFAULT 50",
-                                "month_maximum_backup INT DEFAULT 12"
-                            ]
-                            for col in columns_to_add:
-                                try:
-                                    cursor.execute(f"ALTER TABLE user_settings ADD COLUMN {col};")
-                                    log_fp.write(f"Successfully added missing column definition: {col}\n")
-                                except Exception:
-                                    pass
-                        try:
-                            # Fake apply the first migration of file_manager
-                            call_command('migrate', 'file_manager', fake=True, interactive=False)
-                            log_fp.write("Faked conflicting migration for 'file_manager'.\n")
-                            resolved = True
-                        except Exception as fe:
-                            log_fp.write(f"Failed to fake file_manager migration: {str(fe)}\n")
-                            
-                    # Case C: apps or other tables already exist (users.0006+)
-                    if "apps" in err_str or "app_settings" in err_str or "backup" in err_str or "bandwidth" in err_str or "blocked_ip" in err_str:
-                        try:
-                            # Fake apply users migrations
-                            call_command('migrate', 'users', fake=True, interactive=False)
-                            log_fp.write("Faked pending conflicting migrations for 'users'.\n")
-                            resolved = True
-                        except Exception as fe:
-                            log_fp.write(f"Failed to fake users migrations: {str(fe)}\n")
-
-                    if not resolved:
-                        log_fp.write("Could not auto-resolve migration error. Stopping self-healing.\n")
-                        break
+                    fake_res = subprocess.run([python_bin, manage_py, "migrate", "file_manager", "--fake", "--noinput"], capture_output=True, text=True)
+                    if fake_res.returncode == 0:
+                        log_fp.write("Faked file_manager successfully.\n")
+                        retry_res = subprocess.run([python_bin, manage_py, "migrate", "--noinput"], capture_output=True, text=True)
+                        if retry_res.returncode == 0:
+                            log_fp.write("Migrations successfully resolved and completed.\n")
+                        else:
+                            log_fp.write(f"Migration retry failed: {retry_res.stderr.strip()}\n")
+                    else:
+                        log_fp.write(f"Failed to fake file_manager: {fake_res.stderr.strip()}\n")
+                        
+                # Check for apps/users.0006+ conflicts
+                elif any(tbl in err_str for tbl in ["apps", "app_settings", "backup", "bandwidth", "blocked_ip"]):
+                    fake_res = subprocess.run([python_bin, manage_py, "migrate", "users", "--fake", "--noinput"], capture_output=True, text=True)
+                    if fake_res.returncode == 0:
+                        log_fp.write("Faked users migrations successfully.\n")
+                        retry_res = subprocess.run([python_bin, manage_py, "migrate", "--noinput"], capture_output=True, text=True)
+                        if retry_res.returncode == 0:
+                            log_fp.write("Migrations successfully resolved and completed.\n")
+                        else:
+                            log_fp.write(f"Migration retry failed: {retry_res.stderr.strip()}\n")
+                    else:
+                        log_fp.write(f"Failed to fake users: {fake_res.stderr.strip()}\n")
         except Exception as e:
             log_fp.write(f"Warning syncing database migrations: {str(e)}\n")
 
