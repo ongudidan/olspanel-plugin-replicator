@@ -261,7 +261,14 @@ except Exception as e:
         if os.path.exists(vh_dir):
             for d in os.listdir(vh_dir):
                 if os.path.isdir(os.path.join(vh_dir, d)) and d not in ['Example']:
-                    inventory['domains'].append({'domain': d, 'username': 'nobody', 'path': f'/home/nobody/{d}'})
+                    # Self-healing fallback: inspect the config folder owner on disk
+                    owner = 'nobody'
+                    try:
+                        stat_info = os.stat(os.path.join(vh_dir, d))
+                        owner = pwd.getpwuid(stat_info.st_uid).pw_name
+                    except Exception:
+                        pass
+                    inventory['domains'].append({'domain': d, 'username': owner, 'path': f'/home/{owner}/{d}'})
         
         print(json.dumps({'status': 'success', 'inventory': inventory, 'fallback': True, 'error': str(e)}))
     except Exception as fallback_err:
@@ -270,8 +277,9 @@ except Exception as e:
 
     try:
         ssh_args = build_ssh_args(ip, port, username, password if auth_method == 'password' else None, key_path)
-        # Use sudo python3 if connecting as non-root user (e.g. ubuntu on Oracle Cloud)
-        remote_py_cmd = ["sudo", "python3"] if username != 'root' else ["python3"]
+        # Execute python within the OLSPanel virtual environment if available, otherwise fallback to system python3
+        py_selector = "if [ -f /root/venv/bin/python ]; then /root/venv/bin/python; else python3; fi"
+        remote_py_cmd = ["sudo", "bash", "-c", py_selector] if username != 'root' else ["bash", "-c", py_selector]
         cmd = ["ssh"] + ssh_args + [f"{username}@{ip}"] + remote_py_cmd
         
         env = os.environ.copy()
