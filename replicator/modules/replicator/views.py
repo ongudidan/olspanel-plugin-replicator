@@ -888,19 +888,25 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 subprocess.run(cmd_renewal, env=env)
                 
                 # Fix symlinks inside letsencrypt/live/ which might be broken by rsync
-                # Usually they point relatively to ../../archive/domain/file.pem
+                # Only convert to symlink if the corresponding archive file exists.
+                # If the source certs are regular files (e.g. from acme.sh), we keep them as regular files.
                 live_dir = f"/etc/letsencrypt/live/{domain_name}"
                 for file_name in ['cert.pem', 'chain.pem', 'fullchain.pem', 'privkey.pem']:
                     link_path = os.path.join(live_dir, file_name)
-                    if os.path.islink(link_path):
-                        # Symlink exists, verify target
-                        pass
-                    else:
-                        # Re-create correct symlink relative mapping
-                        archive_target = f"../../archive/{domain_name}/{file_name}"
-                        if os.path.exists(link_path):
-                            os.remove(link_path)
-                        os.symlink(archive_target, link_path)
+                    archive_target_abs = f"/etc/letsencrypt/archive/{domain_name}/{file_name}"
+                    if os.path.exists(archive_target_abs):
+                        archive_target_rel = f"../../archive/{domain_name}/{file_name}"
+                        if os.path.islink(link_path):
+                            try:
+                                if os.readlink(link_path) != archive_target_rel:
+                                    os.unlink(link_path)
+                                    os.symlink(archive_target_rel, link_path)
+                            except Exception:
+                                pass
+                        else:
+                            if os.path.exists(link_path):
+                                os.remove(link_path)
+                            os.symlink(archive_target_rel, link_path)
                 
                 log_fp.write(f"SSL Certificate files successfully synced.\n")
 
