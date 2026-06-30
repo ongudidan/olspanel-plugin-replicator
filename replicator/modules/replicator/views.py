@@ -769,6 +769,40 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                     except Exception as fe:
                         log_fp.write(f"Warning writing credentials file locally: {str(fe)}\n")
 
+        # 2b. Synchronize PHP Versions & Extensions
+        log_fp.write("\n==================================================\n")
+        log_fp.write("Phase 1b: Synchronizing PHP Versions & Extensions\n")
+        log_fp.write("==================================================\n")
+        
+        try:
+            log_fp.write("Checking installed lsphp packages on source server...\n")
+            pkg_cmd = "dpkg-query -f '${binary:Package}\\n' -W 'lsphp*'"
+            pkg_res = run_ssh_command(pkg_cmd)
+            
+            packages_to_install = []
+            if pkg_res.returncode == 0:
+                for line in pkg_res.stdout.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith('dpkg-query:') and 'dpkg-query:' not in line:
+                        packages_to_install.append(line)
+            
+            if packages_to_install:
+                log_fp.write(f"Found {len(packages_to_install)} lsphp packages on source: {', '.join(packages_to_install)}\n")
+                log_fp.write("Running apt-get update locally on destination server...\n")
+                subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
+                
+                log_fp.write("Installing matching PHP packages locally...\n")
+                install_cmd = ["sudo", "apt-get", "install", "-y"] + packages_to_install
+                inst_res = subprocess.run(install_cmd, capture_output=True, text=True)
+                if inst_res.returncode == 0:
+                    log_fp.write("PHP packages and extensions successfully synchronized.\n")
+                else:
+                    log_fp.write(f"Warning: Some PHP packages failed to install: {inst_res.stderr.strip()}\n")
+            else:
+                log_fp.write("No lsphp packages found on the source server.\n")
+        except Exception as e:
+            log_fp.write(f"Warning synchronizing PHP packages: {str(e)}\n")
+
         # 3. Synchronize Web Directories (Rsync)
         log_fp.write("\n==================================================\n")
         log_fp.write("Phase 2: Transferring Web Content & Files\n")
