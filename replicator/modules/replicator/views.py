@@ -717,6 +717,13 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
             log_fp.write(f"📂 Syncing website files for '{domain_name}'...\n")
             
+            # Skip file transfer if the source path does not exist on the remote server
+            # (e.g. system control panel virtual host configurations or directories that aren't on disk)
+            remote_dir_check = run_ssh_command(f"[ -d '{source_path}' ]")
+            if remote_dir_check.returncode != 0:
+                log_fp.write(f"ℹ️ Skipping file transfer: directory '{source_path}' does not exist on source server.\n")
+                continue
+            
             # Resolve destination path
             dest_path = f"/home/{owner}/{domain_name}"
             # Ensure parent directories exist
