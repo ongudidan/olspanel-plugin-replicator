@@ -645,6 +645,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
     log_fp = None
     key_path = None
     try:
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
         log_fp = open(log_file, "w", encoding="utf-8", buffering=1)
         
         def check_cancellation(phase=""):
@@ -1115,7 +1117,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             try:
                 from django.contrib.sessions.backends.db import SessionStore
                 s = SessionStore(session_key=admin_session_key)
-                if s.exists():
+                if s.exists(admin_session_key):
                     admin_session_data_dict = dict(s.items())
                     log_fp.write(f"Admin session data backed up successfully. Keys present: {list(admin_session_data_dict.keys())}\n")
                 else:
@@ -1131,7 +1133,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             try:
                 from django.contrib.sessions.backends.db import SessionStore
                 s = SessionStore(session_key=user_session_key)
-                if s.exists():
+                if s.exists(user_session_key):
                     user_session_data_dict = dict(s.items())
                     log_fp.write(f"User session data backed up successfully. Keys present: {list(user_session_data_dict.keys())}\n")
                 else:
@@ -1384,9 +1386,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             log_fp.write(f"Attempting to restore active admin session key '{admin_session_key}'...\n")
             try:
                 from django.contrib.sessions.backends.db import SessionStore
-                from django.contrib.auth import get_user_model
                 
-                User = get_user_model()
                 user_id = admin_session_data_dict.get('_auth_user_id')
                 user = None
                 if user_id:
@@ -1418,9 +1418,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             log_fp.write(f"Attempting to restore active user session key '{user_session_key}'...\n")
             try:
                 from django.contrib.sessions.backends.db import SessionStore
-                from django.contrib.auth import get_user_model
                 
-                User = get_user_model()
                 user_id = user_session_data_dict.get('_auth_user_id')
                 user = None
                 if user_id:
