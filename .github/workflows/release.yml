@@ -1,0 +1,114 @@
+name: Build and Release OLSPanel Replicator Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      increment_type:
+        description: 'Select version level to increment'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Retrieve all tags and history
+
+      - name: Determine Version and Tag
+        id: version_check
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG_NAME="${{ github.ref_name }}"
+            VERSION="${TAG_NAME#v}"
+            echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+            echo "VERSION=$VERSION" >> $GITHUB_ENV
+            echo "should_tag=false" >> $GITHUB_OUTPUT
+          else
+            git fetch --tags --prune --prune-tags
+            # Get latest tag, or default to v0.0.0 if none exists
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            VERSION="${LATEST_TAG#v}"
+            
+            IFS='.' read -r major minor patch <<< "$VERSION"
+            major=${major:-0}
+            minor=${minor:-0}
+            patch=${patch:-0}
+            
+            if [ "${{ inputs.increment_type }}" = "major" ]; then
+              major=$((major + 1))
+              minor=0
+              patch=0
+            elif [ "${{ inputs.increment_type }}" = "minor" ]; then
+              minor=$((minor + 1))
+              patch=0
+            else
+              patch=$((patch + 1))
+            fi
+            
+            NEW_TAG="v$major.$minor.$patch"
+            echo "TAG_NAME=$NEW_TAG" >> $GITHUB_ENV
+            echo "VERSION=$major.$minor.$patch" >> $GITHUB_ENV
+            echo "should_tag=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and Push Git Tag
+        if: steps.version_check.outputs.should_tag == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ env.TAG_NAME }}
+          git push origin ${{ env.TAG_NAME }}
+
+      - name: Package Plugin Zip
+        run: |
+          zip -r replicator.zip replicator/ -x "*/.git*" -x "*.git*"
+          cp replicator.zip replicator_${{ env.TAG_NAME }}.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Version ${{ env.VERSION }}
+          body: |
+            ## OLSPanel Server Replicator & Migration Wizard (v${{ env.VERSION }})
+
+            Clone remote servers, sync directories/databases, transfer system users with shadow hashes, and configure virtual host configs automatically.
+
+            ### Installation Options:
+            *Note: The following commands must be executed with root/administrative privileges (e.g. run directly as root or prefix with `sudo` depending on your distro).*
+
+            #### Option 1: Install this specific version
+            Run this command directly on your OLSPanel server:
+            ```bash
+            install_cp_plugin https://github.com/ongudidan/olspanel-plugin-replicator/releases/download/${{ env.TAG_NAME }}/replicator_${{ env.TAG_NAME }}.zip
+            ```
+
+            #### Option 2: Always install the latest version
+            Run this command directly on your OLSPanel server:
+            ```bash
+            install_cp_plugin https://github.com/ongudidan/olspanel-plugin-replicator/releases/latest/download/replicator.zip
+            ```
+
+            #### Option 3: Manual Web UI
+            1. Download `replicator_${{ env.TAG_NAME }}.zip` from the Assets below.
+            2. Go to **Admin Panel** -> **Plugins** in your OLSPanel, click **Upload Plugin**, and select the downloaded file.
+          draft: false
+          prerelease: false
+          files: |
+            replicator.zip
+            replicator_${{ env.TAG_NAME }}.zip

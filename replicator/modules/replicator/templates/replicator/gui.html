@@ -1,0 +1,799 @@
+{% extends base_template %}
+
+{% block title %}Server Replicator & Migration Wizard{% endblock title %}
+
+{% block content %}
+{% csrf_token %}
+<div style="padding: 24px; font-family: 'Outfit', 'Inter', sans-serif; color: #1e293b; min-height: 100vh; background: #f8fafc;">
+
+    <!-- Top Navigation Header -->
+    <div style="background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); border-radius: 4px; border: 1px solid rgba(226, 232, 240, 0.8); display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; margin-bottom: 24px; box-shadow: 0 4px 20px -2px rgba(148, 163, 184, 0.06);">
+        <div>
+            <h4 style="margin: 0; font-size: 1.3rem; font-weight: 700; background: linear-gradient(135deg, #1e293b 0%, #475569 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+                Server Replicator & Migrator
+            </h4>
+            <p style="margin: 4px 0 0; font-size: 0.85rem; color: #64748b;">
+                Clone a remote OLSPanel server or migrate select websites, files, and databases over a secure SSH connection
+            </p>
+        </div>
+        <div>
+            <span style="font-size: 0.8rem; font-weight: 600; color: #10b981; background: rgba(16, 185, 129, 0.08); padding: 4px 12px; border-radius: 20px; display: inline-flex; align-items: center; gap: 6px;">
+                <span style="width: 6px; height: 6px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+                Pull Migration Model Active
+            </span>
+        </div>
+    </div>
+
+    <!-- Wizard Step Progress Indicator -->
+    <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 30px; flex-wrap: wrap;">
+        <div id="step-indicator-1" class="step-indicator active-step">1. Connection Settings</div>
+        <div style="color: #94a3b8;">➔</div>
+        <div id="step-indicator-2" class="step-indicator">2. Select Components</div>
+        <div style="color: #94a3b8;">➔</div>
+        <div id="step-indicator-3" class="step-indicator">3. Replicating Server</div>
+    </div>
+
+    <div style="max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px;">
+
+        <!-- STEP 1: SSH Connection Setup -->
+        <div id="step-card-1" style="background: #fff; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.01), 0 2px 4px -1px rgba(0,0,0,0.01); overflow: hidden; transition: all 0.3s ease;">
+            <div style="background: rgba(248, 250, 252, 0.8); border-bottom: 1px solid #e2e8f0; padding: 18px 24px;">
+                <h5 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #1e293b;">🔗 Connect to Remote Source Server</h5>
+            </div>
+            <div style="padding: 24px; display: flex; flex-direction: column; gap: 18px;">
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                    <div>
+                        <label class="input-label">Source Server IP Address:</label>
+                        <input type="text" id="ssh_ip" placeholder="e.g. 192.168.1.100" class="input-field" required>
+                    </div>
+                    <div>
+                        <label class="input-label">SSH Port:</label>
+                        <input type="number" id="ssh_port" value="22" class="input-field" required>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                    <div>
+                        <label class="input-label">SSH Username (requires root/sudo privilege):</label>
+                        <input type="text" id="ssh_username" value="root" class="input-field" required>
+                    </div>
+                    <div>
+                        <label class="input-label">Authentication Method:</label>
+                        <select id="ssh_auth_method" class="input-field" onchange="toggleAuthFields()" style="height: 42px; background: #fff;">
+                            <option value="key">SSH Private Key (Recommended)</option>
+                            <option value="password">SSH Password</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- SSH Key block -->
+                <div id="auth-key-block">
+                    <label class="input-label">SSH Private Key content:</label>
+                    <textarea id="ssh_key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" class="input-field" style="height: 140px; font-family: monospace; font-size: 0.82rem; resize: vertical;"></textarea>
+                    <small style="color: #94a3b8; font-size: 0.75rem; display: block; margin-top: 4px;">Paste the private key matching the public key authorized on the source server.</small>
+                </div>
+
+                <!-- Password block -->
+                <div id="auth-password-block" style="display: none;">
+                    <label class="input-label">SSH Password:</label>
+                    <input type="password" id="ssh_password" placeholder="••••••••••••" class="input-field">
+                </div>
+
+                <!-- Error Message Alert -->
+                <div id="step1-error" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: 4px; padding: 14px; color: #b91c1c; font-size: 0.85rem;"></div>
+
+                <div style="display: flex; gap: 12px; margin-top: 8px; border-top: 1px solid #f1f5f9; padding-top: 18px;">
+                    <button onclick="testConnection()" id="btn-test-conn" class="btn-secondary">
+                        ⚡ Test SSH Connection
+                    </button>
+                    <button onclick="fetchInventory()" id="btn-discover" class="btn-primary" style="margin-left: auto;">
+                        🔍 Connect & Scan Resources ➔
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- STEP 2: Resource Inventory & Checkbox selection -->
+        <div id="step-card-2" style="display: none; background: #fff; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.01), 0 2px 4px -1px rgba(0,0,0,0.01); overflow: hidden; transition: all 0.3s ease;">
+            <div style="background: rgba(248, 250, 252, 0.8); border-bottom: 1px solid #e2e8f0; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between;">
+                <h5 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #1e293b;">📋 Select Components to Migrate</h5>
+                <button onclick="changeStep(1)" class="btn-secondary" style="padding: 4px 10px; font-size: 0.78rem;">◀ Back</button>
+            </div>
+            
+            <div style="padding: 24px; display: flex; flex-direction: column; gap: 20px;">
+                
+                <div style="display: flex; gap: 14px; align-items: center; background: #f8fafc; padding: 10px 14px; border-radius: 4px; border: 1px solid #e2e8f0;">
+                    <input type="checkbox" id="select-all-toggle" onchange="toggleSelectAll(this)" style="width: 16px; height: 16px; cursor: pointer;">
+                    <label for="select-all-toggle" style="font-weight: 700; font-size: 0.9rem; cursor: pointer; color: #334155; margin: 0;">
+                        Select All (Complete Server Replication)
+                    </label>
+                </div>
+
+                <!-- Tree structure categories -->
+                <div style="display: grid; grid-template-columns: 1fr; gap: 18px; margin-top: 6px;">
+                    
+                    <!-- Web Domains List -->
+                    <div class="tree-category-card">
+                        <div class="tree-header">
+                            <input type="checkbox" id="category-domains" onchange="toggleCategory('domain-item', this)" style="width: 15px; height: 15px; cursor: pointer;">
+                            <span style="font-size: 1.25rem;">🌐</span>
+                            <span style="font-weight: 700;">Websites / Virtual Hosts</span>
+                            <span id="domains-count-badge" class="badge-count">0</span>
+                        </div>
+                        <div id="domains-options-list" class="tree-options-container">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Databases List -->
+                    <div class="tree-category-card">
+                        <div class="tree-header">
+                            <input type="checkbox" id="category-databases" onchange="toggleCategory('database-item', this)" style="width: 15px; height: 15px; cursor: pointer;">
+                            <span style="font-size: 1.25rem;">🗄️</span>
+                            <span style="font-weight: 700;">MySQL Databases</span>
+                            <span id="databases-count-badge" class="badge-count">0</span>
+                        </div>
+                        <div id="databases-options-list" class="tree-options-container">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- System Users List -->
+                    <div class="tree-category-card">
+                        <div class="tree-header">
+                            <input type="checkbox" id="category-users" onchange="toggleCategory('user-item', this)" style="width: 15px; height: 15px; cursor: pointer;">
+                            <span style="font-size: 1.25rem;">👥</span>
+                            <span style="font-weight: 700;">System Users & Accounts</span>
+                            <span id="users-count-badge" class="badge-count">0</span>
+                        </div>
+                        <div id="users-options-list" class="tree-options-container">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Validation Alerts -->
+                <div id="step2-error" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: 4px; padding: 14px; color: #b91c1c; font-size: 0.85rem;"></div>
+
+                <div style="border-top: 1px solid #f1f5f9; padding-top: 18px; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 0.8rem; color: #94a3b8; font-weight: 600;" id="selection-summary">No items selected</span>
+                    <button onclick="startReplication()" id="btn-start-replication" class="btn-primary-success">
+                        🚀 Start Migration Replication ➔
+                    </button>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- STEP 3: Migration Execution Progress Console -->
+        <div id="step-card-3" style="display: none; background: #fff; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.01), 0 2px 4px -1px rgba(0,0,0,0.01); overflow: hidden; transition: all 0.3s ease;">
+            <div style="background: rgba(248, 250, 252, 0.8); border-bottom: 1px solid #e2e8f0; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between;">
+                <h5 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #1e293b;">⚡ Migration Progress Console</h5>
+                <span id="job-status-badge" class="badge-running">Syncing Assets...</span>
+            </div>
+            
+            <div style="padding: 24px; background: #0f172a; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;">
+                <div id="migration-terminal" style="height: 380px; overflow-y: auto; font-family: 'Fira Code', 'Courier New', monospace; font-size: 0.82rem; color: #e2e8f0; line-height: 1.6; white-space: pre-wrap; word-break: break-all; margin: 0; padding: 4px;">Initializing replication log stream...</div>
+            </div>
+
+            <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;">
+                <span style="font-size: 0.82rem; color: #64748b;" id="terminal-footer-info">Keep this tab open while replication runs.</span>
+                <button id="btn-finish-migration" onclick="location.reload()" class="btn-secondary" style="display: none; font-weight: 600;">
+                    🎉 Complete & Reload
+                </button>
+            </div>
+        </div>
+
+        <!-- RECENT MIGRATION JOBS -->
+        {% if jobs %}
+        <div id="recent-jobs-card" style="background: #fff; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.02); overflow: hidden;">
+            <div style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 14px 20px;">
+                <h6 style="margin: 0; font-size: 0.9rem; font-weight: 700; color: #334155;">📜 Recent Migration History</h6>
+            </div>
+            <div style="padding: 8px 0; overflow-x: auto;">
+                <table class="table" style="width: 100%; margin: 0; font-size: 0.85rem; color: #475569;">
+                    <thead>
+                        <tr style="background: #f8fafc; border-bottom: 1px solid #f1f5f9;">
+                            <th style="padding: 10px 20px; text-align: left; font-weight: 600;">Job ID</th>
+                            <th style="padding: 10px 20px; text-align: left; font-weight: 600;">Source Server</th>
+                            <th style="padding: 10px 20px; text-align: left; font-weight: 600;">Status</th>
+                            <th style="padding: 10px 20px; text-align: left; font-weight: 600;">Started At</th>
+                            <th style="padding: 10px 20px; text-align: right; font-weight: 600; width: 140px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in jobs %}
+                        <tr style="border-bottom: 1px solid #f1f5f9;">
+                            <td style="padding: 10px 20px; font-weight: 700;">#{{ job.id }}</td>
+                            <td style="padding: 10px 20px; font-family: monospace;">{{ job.source_ip }}</td>
+                            <td style="padding: 10px 20px;">
+                                {% if job.status == 'completed' %}
+                                    <span style="background: #dcfce7; color: #16a34a; font-weight: 600; padding: 2px 8px; border-radius: 4px;">completed</span>
+                                {% elif job.status == 'failed' %}
+                                    <span style="background: #fee2e2; color: #ef4444; font-weight: 600; padding: 2px 8px; border-radius: 4px;">failed</span>
+                                {% else %}
+                                    <span style="background: #fef3c7; color: #d97706; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{{ job.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td style="padding: 10px 20px;">{{ job.created_at }}</td>
+                            <td style="padding: 10px 20px; text-align: right;">
+                                <button onclick="reopenConsole({{ job.id }})" class="btn-secondary" style="padding: 4px 10px; font-size: 0.78rem;">
+                                    View Logs
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+    </div>
+</div>
+
+<style>
+/* Design tokens & styling helpers */
+.step-indicator {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #64748b;
+    background: #e2e8f0;
+    padding: 8px 16px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+.active-step {
+    color: #ffffff;
+    background: #3b82f6;
+    box-shadow: 0 4px 10px -2px rgba(59, 130, 246, 0.3);
+}
+.input-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #374151;
+    display: block;
+    margin-bottom: 6px;
+}
+.input-field {
+    width: 100%;
+    height: 42px;
+    padding: 8px 14px;
+    border-radius: 4px;
+    border: 1px solid #cbd5e1;
+    outline: none;
+    font-size: 0.9rem;
+    color: #1e293b;
+    box-sizing: border-box;
+    transition: all 0.2s;
+}
+.input-field:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+.btn-primary {
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    height: 40px;
+    padding: 0 18px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.btn-primary:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+}
+.btn-primary:active {
+    transform: scale(0.97);
+}
+.btn-primary-success {
+    background: #10b981;
+    color: #fff;
+    border: none;
+    height: 40px;
+    padding: 0 18px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.btn-primary-success:hover {
+    background: #059669;
+    transform: translateY(-1px);
+}
+.btn-secondary {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    color: #475569;
+    height: 40px;
+    padding: 0 18px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.btn-secondary:hover {
+    background: #f8fafc;
+}
+.tree-category-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.tree-header {
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 12px 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #334155;
+    font-size: 0.9rem;
+    user-select: none;
+}
+.badge-count {
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: auto;
+}
+.tree-options-container {
+    padding: 12px 18px;
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.tree-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.85rem;
+    color: #475569;
+    cursor: pointer;
+    user-select: none;
+}
+.badge-running {
+    background: #dbeafe;
+    color: #1d4ed8;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 4px;
+    animation: pulseGlow 1.5s infinite alternate;
+}
+@keyframes pulseGlow {
+    from { opacity: 0.8; }
+    to { opacity: 1; box-shadow: 0 0 8px rgba(59, 130, 246, 0.2); }
+}
+</style>
+
+<script>
+// Authentication Form toggle
+function toggleAuthFields() {
+    const method = document.getElementById('ssh_auth_method').value;
+    if (method === 'key') {
+        document.getElementById('auth-key-block').style.display = 'block';
+        document.getElementById('auth-password-block').style.display = 'none';
+    } else {
+        document.getElementById('auth-key-block').style.display = 'none';
+        document.getElementById('auth-password-block').style.display = 'block';
+    }
+}
+
+// Step progression control
+let activeStep = 1;
+function changeStep(stepNum) {
+    activeStep = stepNum;
+    
+    // Toggle indicators
+    document.querySelectorAll('.step-indicator').forEach((el, index) => {
+        if (index + 1 === stepNum) {
+            el.classList.add('active-step');
+        } else {
+            el.classList.remove('active-step');
+        }
+    });
+
+    // Toggle cards
+    document.getElementById('step-card-1').style.display = stepNum === 1 ? 'block' : 'none';
+    document.getElementById('step-card-2').style.display = stepNum === 2 ? 'block' : 'none';
+    document.getElementById('step-card-3').style.display = stepNum === 3 ? 'block' : 'none';
+}
+
+// Step 1: Test Connection
+function testConnection() {
+    const btn = document.getElementById('btn-test-conn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = 'Testing...';
+    
+    const errorDiv = document.getElementById('step1-error');
+    errorDiv.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('ip', document.getElementById('ssh_ip').value);
+    formData.append('port', document.getElementById('ssh_port').value);
+    formData.append('username', document.getElementById('ssh_username').value);
+    formData.append('auth_method', document.getElementById('ssh_auth_method').value);
+    formData.append('password', document.getElementById('ssh_password').value);
+    formData.append('ssh_key', document.getElementById('ssh_key').value);
+    
+    const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+
+    fetch("{% url 'replicator_test_ssh' %}", {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken },
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        if (data.status === 'success') {
+            alert("🟢 " + data.message);
+        } else {
+            errorDiv.textContent = data.message;
+            errorDiv.style.display = 'block';
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        errorDiv.textContent = "Network error testing SSH connection.";
+        errorDiv.style.display = 'block';
+    });
+}
+
+// Global resource caches
+let inventoryUsers = [];
+let inventoryDomains = [];
+let inventoryDatabases = [];
+
+// Step 1: Scan Inventory
+function fetchInventory() {
+    const btn = document.getElementById('btn-discover');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = 'Connecting & Scanning...';
+
+    const errorDiv = document.getElementById('step1-error');
+    errorDiv.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('ip', document.getElementById('ssh_ip').value);
+    formData.append('port', document.getElementById('ssh_port').value);
+    formData.append('username', document.getElementById('ssh_username').value);
+    formData.append('auth_method', document.getElementById('ssh_auth_method').value);
+    formData.append('password', document.getElementById('ssh_password').value);
+    formData.append('ssh_key', document.getElementById('ssh_key').value);
+
+    const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+
+    fetch("{% url 'replicator_fetch_inventory' %}", {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken },
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        if (data.status === 'success') {
+            // Success! Populate selection trees
+            populateSelectionLists(data.inventory);
+            changeStep(2);
+        } else {
+            errorDiv.textContent = data.message;
+            errorDiv.style.display = 'block';
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        errorDiv.textContent = "Connection failed during remote scans.";
+        errorDiv.style.display = 'block';
+    });
+}
+
+// Step 2: Populates the tree listings
+function populateSelectionLists(inventory) {
+    inventoryUsers = inventory.users || [];
+    inventoryDomains = inventory.domains || [];
+    inventoryDatabases = inventory.databases || [];
+
+    // Domains
+    const domList = document.getElementById('domains-options-list');
+    domList.innerHTML = '';
+    document.getElementById('domains-count-badge').textContent = inventoryDomains.length;
+    if (inventoryDomains.length === 0) {
+        domList.innerHTML = '<div style="font-size:0.8rem; color:#94a3b8;">No websites found.</div>';
+    } else {
+        inventoryDomains.forEach((d, idx) => {
+            domList.innerHTML += `
+                <div class="tree-option" onclick="toggleOptionCheckbox('domain-${idx}')">
+                    <input type="checkbox" id="domain-${idx}" class="domain-item" data-val='${JSON.stringify(d)}' onchange="updateSummary()" style="cursor:pointer;">
+                    <span><strong>${d.domain}</strong> <small style="color:#94a3b8;">(Owner: ${d.username})</small></span>
+                </div>
+            `;
+        });
+    }
+
+    // Databases
+    const dbList = document.getElementById('databases-options-list');
+    dbList.innerHTML = '';
+    document.getElementById('databases-count-badge').textContent = inventoryDatabases.length;
+    if (inventoryDatabases.length === 0) {
+        dbList.innerHTML = '<div style="font-size:0.8rem; color:#94a3b8;">No databases found.</div>';
+    } else {
+        inventoryDatabases.forEach((db, idx) => {
+            dbList.innerHTML += `
+                <div class="tree-option" onclick="toggleOptionCheckbox('database-${idx}')">
+                    <input type="checkbox" id="database-${idx}" class="database-item" data-val="${db}" onchange="updateSummary()" style="cursor:pointer;">
+                    <span>${db}</span>
+                </div>
+            `;
+        });
+    }
+
+    // Users
+    const uList = document.getElementById('users-options-list');
+    uList.innerHTML = '';
+    document.getElementById('users-count-badge').textContent = inventoryUsers.length;
+    if (inventoryUsers.length === 0) {
+        uList.innerHTML = '<div style="font-size:0.8rem; color:#94a3b8;">No system users found.</div>';
+    } else {
+        inventoryUsers.forEach((u, idx) => {
+            uList.innerHTML += `
+                <div class="tree-option" onclick="toggleOptionCheckbox('user-${idx}')">
+                    <input type="checkbox" id="user-${idx}" class="user-item" data-val='${JSON.stringify(u)}' onchange="updateSummary()" style="cursor:pointer;">
+                    <span>${u.username} ${u.is_superuser ? '<small style="color:#3b82f6;font-weight:600;">(Admin)</small>' : ''}</span>
+                </div>
+            `;
+        });
+    }
+
+    // Reset Select All
+    document.getElementById('select-all-toggle').checked = false;
+    updateSummary();
+}
+
+function toggleOptionCheckbox(id) {
+    const chk = document.getElementById(id);
+    if (chk) {
+        // Only toggle if clicked directly on target label/div (prevent duplicate click triggers on checkbox input itself)
+        if (event.target.tagName !== 'INPUT') {
+            chk.checked = !chk.checked;
+        }
+        updateSummary();
+    }
+}
+
+// Select All action
+function toggleSelectAll(master) {
+    const isChecked = master.checked;
+    
+    document.getElementById('category-domains').checked = isChecked;
+    document.getElementById('category-databases').checked = isChecked;
+    document.getElementById('category-users').checked = isChecked;
+
+    document.querySelectorAll('.domain-item, .database-item, .user-item').forEach(el => {
+        el.checked = isChecked;
+    });
+
+    updateSummary();
+}
+
+// Category header checks toggle
+function toggleCategory(className, master) {
+    document.querySelectorAll('.' + className).forEach(el => {
+        el.checked = master.checked;
+    });
+    updateSummary();
+}
+
+// Count selected items
+function updateSummary() {
+    const domainsChecked = document.querySelectorAll('.domain-item:checked');
+    const databasesChecked = document.querySelectorAll('.database-item:checked');
+    const usersChecked = document.querySelectorAll('.user-item:checked');
+
+    const totalSelected = domainsChecked.length + databasesChecked.length + usersChecked.length;
+    const summaryText = `${totalSelected} item(s) selected: ${domainsChecked.length} webs, ${databasesChecked.length} databases, ${usersChecked.length} users`;
+    
+    document.getElementById('selection-summary').textContent = summaryText;
+
+    // Check if category states are completely full
+    updateCategoryHeaderState('domain-item', 'category-domains');
+    updateCategoryHeaderState('database-item', 'category-databases');
+    updateCategoryHeaderState('user-item', 'category-users');
+}
+
+function updateCategoryHeaderState(classItem, headerId) {
+    const all = document.querySelectorAll('.' + classItem);
+    const checked = document.querySelectorAll('.' + classItem + ':checked');
+    const header = document.getElementById(headerId);
+    
+    if (all.length > 0 && checked.length === all.length) {
+        header.checked = true;
+    } else {
+        header.checked = false;
+    }
+}
+
+// Step 2: Trigger replication run
+function startReplication() {
+    const domainsChecked = document.querySelectorAll('.domain-item:checked');
+    const databasesChecked = document.querySelectorAll('.database-item:checked');
+    const usersChecked = document.querySelectorAll('.user-item:checked');
+
+    const errDiv = document.getElementById('step2-error');
+    errDiv.style.display = 'none';
+
+    if (domainsChecked.length === 0 && databasesChecked.length === 0 && usersChecked.length === 0) {
+        errDiv.textContent = "Please select at least one component (user, domain, or database) to replicate.";
+        errDiv.style.display = 'block';
+        return;
+    }
+
+    const selectedUsers = [];
+    usersChecked.forEach(el => {
+        selectedUsers.push(JSON.parse(el.getAttribute('data-val')));
+    });
+
+    const selectedDomains = [];
+    domainsChecked.forEach(el => {
+        selectedDomains.push(JSON.parse(el.getAttribute('data-val')));
+    });
+
+    const selectedDatabases = [];
+    databasesChecked.forEach(el => {
+        selectedDatabases.push(el.getAttribute('data-val'));
+    });
+
+    const btn = document.getElementById('btn-start-replication');
+    btn.disabled = true;
+    btn.innerHTML = 'Spawning Task...';
+
+    const formData = new FormData();
+    formData.append('ip', document.getElementById('ssh_ip').value);
+    formData.append('port', document.getElementById('ssh_port').value);
+    formData.append('username', document.getElementById('ssh_username').value);
+    formData.append('auth_method', document.getElementById('ssh_auth_method').value);
+    formData.append('password', document.getElementById('ssh_password').value);
+    formData.append('ssh_key', document.getElementById('ssh_key').value);
+
+    formData.append('selected_users', JSON.stringify(selectedUsers));
+    formData.append('selected_domains', JSON.stringify(selectedDomains));
+    formData.append('selected_databases', JSON.stringify(selectedDatabases));
+
+    const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+
+    fetch("{% url 'replicator_start' %}", {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken },
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = 'Start Migration Replication ➔';
+        if (data.status === 'success') {
+            // Start streaming console logs
+            changeStep(3);
+            initializeLogsStream(data.job_id);
+        } else {
+            errDiv.textContent = data.message;
+            errDiv.style.display = 'block';
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = 'Start Migration Replication ➔';
+        errDiv.textContent = "Failed spawning migration task on server.";
+        errDiv.style.display = 'block';
+    });
+}
+
+// Step 3: Stream console logs from job_id
+window.activeStreamReader = null;
+function initializeLogsStream(jobId) {
+    const consoleDiv = document.getElementById('migration-terminal');
+    consoleDiv.innerHTML = "Replication running. Loading stdout log streams...\n";
+    
+    const statusBadge = document.getElementById('job-status-badge');
+    statusBadge.className = 'badge-running';
+    statusBadge.textContent = 'Syncing Assets...';
+
+    document.getElementById('btn-finish-migration').style.display = 'none';
+
+    fetch(`/module/replicator/stream/${jobId}/`)
+    .then(res => {
+        const reader = res.body.getReader();
+        window.activeStreamReader = reader;
+        const decoder = new TextDecoder("utf-8");
+        consoleDiv.innerHTML = "";
+
+        function readNextChunk() {
+            reader.read().then(({done, value}) => {
+                if (done) {
+                    consoleDiv.innerHTML += "\n\n🏁 Log stream closed.";
+                    checkJobFinalStatus(jobId);
+                    return;
+                }
+                const chunk = decoder.decode(value, {stream: true});
+                consoleDiv.innerHTML += chunk;
+                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+                readNextChunk();
+            }).catch(err => {
+                consoleDiv.innerHTML += "\n\n⚠️ Log stream disconnected.";
+                checkJobFinalStatus(jobId);
+            });
+        }
+
+        readNextChunk();
+    })
+    .catch(err => {
+        consoleDiv.innerHTML = "Error connecting to log stream API.";
+    });
+}
+
+// Queries backend to check if final job status was completed or failed
+function checkJobFinalStatus(jobId) {
+    const statusBadge = document.getElementById('job-status-badge');
+    const finishBtn = document.getElementById('btn-finish-migration');
+
+    fetch(`/module/replicator/status/${jobId}/`)
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'success') {
+            if (data.job_status === 'completed') {
+                statusBadge.className = 'btn-primary-success';
+                statusBadge.textContent = 'Success';
+                statusBadge.style.animation = 'none';
+                finishBtn.style.display = 'inline-block';
+            } else if (data.job_status === 'failed') {
+                statusBadge.className = 'btn-secondary';
+                statusBadge.style.background = '#fee2e2';
+                statusBadge.style.color = '#ef4444';
+                statusBadge.style.border = '1px solid #fecaca';
+                statusBadge.textContent = 'Failed';
+                statusBadge.style.animation = 'none';
+                finishBtn.textContent = 'Back to wizard';
+                finishBtn.style.display = 'inline-block';
+            }
+        }
+    });
+}
+
+// Reopens logs for previous jobs
+function reopenConsole(jobId) {
+    changeStep(3);
+    initializeLogsStream(jobId);
+}
+
+// Check on load if auth needs to be toggled and check if there's a running job to resume
+document.addEventListener("DOMContentLoaded", () => {
+    toggleAuthFields();
+    {% if running_job_id %}
+    reopenConsole({{ running_job_id }});
+    {% endif %}
+});
+</script>
+
+{% if not user.is_superuser %}
+{% include "users/footer.html" %}
+{% endif %}
+{% endblock content %}
