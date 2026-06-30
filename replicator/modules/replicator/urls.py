@@ -8,4 +8,5 @@ urlpatterns = [
     path('start/', views.start_migration_view, name='replicator_start'),
     path('stream/<int:job_id>/', views.stream_logs_view, name='replicator_stream_logs'),
     path('status/<int:job_id>/', views.job_status_view, name='replicator_job_status'),
+    path('cancel/<int:job_id>/', views.cancel_migration_view, name='replicator_cancel'),
 ]

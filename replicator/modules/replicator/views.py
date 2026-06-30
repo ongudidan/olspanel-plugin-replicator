@@ -408,10 +408,40 @@ def job_status_view(request, job_id):
         "completed_at": row[2]
     })
 
+@loginadminoruser
+def cancel_migration_view(request, job_id):
+    """Flags a running migration job as cancelled"""
+    user = get_authenticated_user(request)
+    if not is_admin(user):
+        return JsonResponse({"status": "error", "message": "Unauthorized Access"}, status=403)
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT status FROM replicator_jobs WHERE id = %s", [job_id])
+        row = cursor.fetchone()
+        if not row:
+            return JsonResponse({"status": "error", "message": "Job not found"}, status=404)
+        if row[0] != 'running':
+            return JsonResponse({"status": "error", "message": "Only running jobs can be cancelled"}, status=400)
+
+        cursor.execute("UPDATE replicator_jobs SET status = 'cancelled', completed_at = %s WHERE id = %s", [datetime.now(), job_id])
+
+    return JsonResponse({"status": "success", "message": "Cancellation request submitted."})
+
 
 # ==========================================
-# Core Migration Task Runner (Background)
+# Core Migration Helper & Task Runner
 # ==========================================
+
+def is_job_cancelled(job_id):
+    """Checks if the job has been flagged as cancelled in the database"""
+    try:
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT status FROM replicator_jobs WHERE id = %s", [job_id])
+            row = cursor.fetchone()
+            return row and row[0] == 'cancelled'
+    except Exception:
+        return False
 
 def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, compress_transfer, log_file):
     """Runs rsync, database dumps, user creations, OLS configurations, and django metadata imports"""
@@ -419,6 +449,17 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
     key_path = None
     try:
         log_fp = open(log_file, "w", encoding="utf-8", buffering=1)
+        
+        def check_cancellation(phase=""):
+            if is_job_cancelled(job_id):
+                log_fp.write(f"\n❌ Migration cancelled by user during {phase}.\n")
+                if key_path and os.path.exists(key_path):
+                    try:
+                        os.remove(key_path)
+                    except Exception:
+                        pass
+                return True
+            return False
         log_fp.write(f"🚀 Starting Server Replication Job #{job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         log_fp.write(f"🌍 Source Server: {ip}:{port}\n")
         log_fp.write(f"📦 Items Selected: {len(users)} users, {len(domains)} domains, {len(databases)} databases\n\n")
@@ -447,6 +488,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         log_fp.write("==================================================\n")
         
         for u in users:
+            if check_cancellation("Phase 1 (User replication)"): return
             username = u.get('username')
             password_hash = u.get('password_hash', '')
             is_superuser = u.get('is_superuser', False)
@@ -526,6 +568,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         log_fp.write("==================================================\n")
 
         for d in domains:
+            if check_cancellation("Phase 2 (File transfer)"): return
             domain_name = d.get('domain')
             owner = d.get('username')
             source_path = d.get('path', f'/home/{owner}/{domain_name}')
@@ -554,9 +597,22 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             rsync_proc = subprocess.Popen(rsync_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             
             # Print a status tick every 5 seconds so the user console shows heartbeat activity
+            last_tick = time.time()
             while rsync_proc.poll() is None:
-                log_fp.write(".")
-                time.sleep(5)
+                if is_job_cancelled(job_id):
+                    log_fp.write("\n❌ Migration cancelled. Terminating active rsync process...\n")
+                    rsync_proc.terminate()
+                    rsync_proc.wait()
+                    if key_path and os.path.exists(key_path):
+                        try:
+                            os.remove(key_path)
+                        except Exception:
+                            pass
+                    return
+                if time.time() - last_tick >= 5:
+                    log_fp.write(".")
+                    last_tick = time.time()
+                time.sleep(0.5)
             log_fp.write("\n")
             
             rsync_proc.wait()
@@ -653,6 +709,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
 
         # 4b. Replicate Databases
         for db_name in databases:
+            if check_cancellation("Phase 3 (Database replication)"): return
             log_fp.write(f"🗄️ Replicating database '{db_name}'...\n")
             log_fp.write(f"⚠️ WARNING: This will overwrite/drop local tables in '{db_name}'. If the site is already live here, it may experience temporary query errors during the import.\n")
             
@@ -686,6 +743,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         log_fp.write("==================================================\n")
 
         for d in domains:
+            if check_cancellation("Phase 4 (OLS Config sync)"): return
             domain_name = d.get('domain')
             owner = d.get('username')
             doc_root = f"/home/{owner}/{domain_name}"

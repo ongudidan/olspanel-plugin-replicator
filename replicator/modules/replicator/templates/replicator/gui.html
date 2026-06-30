@@ -191,9 +191,14 @@
 
             <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;">
                 <span style="font-size: 0.82rem; color: #64748b;" id="terminal-footer-info">Keep this tab open while replication runs.</span>
-                <button id="btn-finish-migration" onclick="location.reload()" class="btn-secondary" style="display: none; font-weight: 600;">
-                    🎉 Complete & Reload
-                </button>
+                <div style="display: flex; gap: 10px;">
+                    <button id="btn-cancel-migration" onclick="cancelMigration()" class="btn-secondary" style="background: #fef2f2; color: #b91c1c; border-color: #fecaca; font-weight: 600; cursor: pointer;">
+                        🛑 Cancel Migration
+                    </button>
+                    <button id="btn-finish-migration" onclick="location.reload()" class="btn-secondary" style="display: none; font-weight: 600; cursor: pointer;">
+                        🎉 Complete & Reload
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -721,7 +726,9 @@ function startReplication() {
 
 // Step 3: Stream console logs from job_id
 window.activeStreamReader = null;
+let currentMigrationJobId = null;
 function initializeLogsStream(jobId) {
+    currentMigrationJobId = jobId;
     const consoleDiv = document.getElementById('migration-terminal');
     consoleDiv.innerHTML = "Replication running. Loading stdout log streams...\n";
     
@@ -730,6 +737,12 @@ function initializeLogsStream(jobId) {
     statusBadge.textContent = 'Syncing Assets...';
 
     document.getElementById('btn-finish-migration').style.display = 'none';
+    const cancelBtn = document.getElementById('btn-cancel-migration');
+    if (cancelBtn) {
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = '🛑 Cancel Migration';
+        cancelBtn.style.display = 'inline-block';
+    }
 
     fetch(`/module/replicator/stream/${jobId}/`)
     .then(res => {
@@ -766,6 +779,7 @@ function initializeLogsStream(jobId) {
 function checkJobFinalStatus(jobId) {
     const statusBadge = document.getElementById('job-status-badge');
     const finishBtn = document.getElementById('btn-finish-migration');
+    const cancelBtn = document.getElementById('btn-cancel-migration');
 
     fetch(`/module/replicator/status/${jobId}/`)
     .then(res => res.json())
@@ -776,6 +790,7 @@ function checkJobFinalStatus(jobId) {
                 statusBadge.textContent = 'Success';
                 statusBadge.style.animation = 'none';
                 finishBtn.style.display = 'inline-block';
+                if (cancelBtn) cancelBtn.style.display = 'none';
             } else if (data.job_status === 'failed') {
                 statusBadge.className = 'btn-secondary';
                 statusBadge.style.background = '#fee2e2';
@@ -785,8 +800,55 @@ function checkJobFinalStatus(jobId) {
                 statusBadge.style.animation = 'none';
                 finishBtn.textContent = 'Back to wizard';
                 finishBtn.style.display = 'inline-block';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            } else if (data.job_status === 'cancelled') {
+                statusBadge.className = 'btn-secondary';
+                statusBadge.style.background = '#f1f5f9';
+                statusBadge.style.color = '#64748b';
+                statusBadge.style.border = '1px solid #cbd5e1';
+                statusBadge.textContent = 'Cancelled';
+                statusBadge.style.animation = 'none';
+                finishBtn.textContent = 'Back to wizard';
+                finishBtn.style.display = 'inline-block';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            } else {
+                if (cancelBtn) cancelBtn.style.display = 'inline-block';
             }
         }
+    });
+}
+
+// Request cancellation from the server
+function cancelMigration() {
+    if (!currentMigrationJobId) return;
+    if (!confirm("Are you sure you want to stop and cancel this migration? This will immediately terminate all active file transfers and SQL pipes.")) {
+        return;
+    }
+    
+    const cancelBtn = document.getElementById('btn-cancel-migration');
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Stopping...';
+    
+    const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+    
+    fetch(`/module/replicator/cancel/${currentMigrationJobId}/`, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken }
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'success') {
+            alert("🛑 Cancellation requested. The replication processes are terminating.");
+        } else {
+            alert("⚠️ " + data.message);
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = '🛑 Cancel Migration';
+        }
+    })
+    .catch(err => {
+        alert("Connection error sending cancellation request.");
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = '🛑 Cancel Migration';
     });
 }
 
