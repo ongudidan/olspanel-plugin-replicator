@@ -321,10 +321,12 @@ def start_migration_view(request):
     with connection.cursor() as cursor:
         cursor.execute("UPDATE replicator_jobs SET log_file = %s WHERE id = %s", [log_file, job_id])
 
+    compress_transfer = request.POST.get('compress_transfer') == 'true'
+
     # Run actual replication asynchronously
     t = threading.Thread(
         target=run_replication_task,
-        args=(job_id, ip, port, username, auth_method, password, ssh_key, selected_users, selected_domains, selected_databases, log_file)
+        args=(job_id, ip, port, username, auth_method, password, ssh_key, selected_users, selected_domains, selected_databases, compress_transfer, log_file)
     )
     t.daemon = True
     t.start()
@@ -411,7 +413,7 @@ def job_status_view(request, job_id):
 # Core Migration Task Runner (Background)
 # ==========================================
 
-def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, log_file):
+def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, ssh_key, users, domains, databases, compress_transfer, log_file):
     """Runs rsync, database dumps, user creations, OLS configurations, and django metadata imports"""
     log_fp = None
     key_path = None
@@ -541,11 +543,11 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             if key_path:
                 ssh_rsync_opts += f" -i {key_path}"
 
-            # Remove -v (verbose) to prevent stdout flooding on millions of files (which causes CPU GIL bottleneck)
-            # Add --timeout=60 to prevent infinite hanging
-            rsync_cmd = ["rsync", "-az", "--timeout=60", "--delete", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{source_path}/", f"{dest_path}/"]
+            # Apply compression flag dynamically based on user config (CPU vs Network compression tuning)
+            rsync_flags = "-az" if compress_transfer else "-a"
+            rsync_cmd = ["rsync", rsync_flags, "--timeout=60", "--delete", "-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{source_path}/", f"{dest_path}/"]
             
-            log_fp.write(f"⚡ Running rsync file transfer (silent mode)...\n")
+            log_fp.write(f"⚡ Running rsync file transfer (silent mode, compression={'ON' if compress_transfer else 'OFF'})...\n")
             log_fp.write("Syncing files ")
             
             # Run rsync

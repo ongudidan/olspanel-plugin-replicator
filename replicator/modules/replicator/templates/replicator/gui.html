@@ -80,6 +80,17 @@
                     <input type="password" id="ssh_password" placeholder="••••••••••••" class="input-field">
                 </div>
 
+                <!-- Compression option -->
+                <div style="margin-top: 4px; display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="compress_transfer" style="width: 16px; height: 16px; cursor: pointer;">
+                    <label for="compress_transfer" style="font-size: 0.82rem; color: #475569; font-weight: 600; cursor: pointer; margin: 0;">
+                        🗜️ Enable compression during transfer (WAN / slow networks only)
+                    </label>
+                </div>
+                <small style="color: #94a3b8; font-size: 0.72rem; display: block; margin-top: -6px; margin-left: 24px; margin-bottom: 8px;">
+                    Leave unchecked for high-speed local networks (like Oracle Cloud VCN, LAN) or low-CPU VPS shapes to prevent performance bottlenecks.
+                </small>
+
                 <!-- Error Message Alert -->
                 <div id="step1-error" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: 4px; padding: 14px; color: #b91c1c; font-size: 0.85rem;"></div>
 
@@ -678,6 +689,7 @@ function startReplication() {
     formData.append('selected_users', JSON.stringify(selectedUsers));
     formData.append('selected_domains', JSON.stringify(selectedDomains));
     formData.append('selected_databases', JSON.stringify(selectedDatabases));
+    formData.append('compress_transfer', document.getElementById('compress_transfer').checked);
 
     const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
 
