@@ -1409,7 +1409,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 s_new.save()
                 log_fp.write("Preserved and authenticated active admin session successfully.\n")
             except Exception as se:
-                log_fp.write(f"Warning restoring active admin session: {str(se)}\n")
+                import traceback
+                log_fp.write(f"Warning restoring active admin session:\n{traceback.format_exc()}\n")
         else:
             log_fp.write("Skipping admin session restore (not active or missing backup).\n")
 
@@ -1438,7 +1439,8 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 s_new.save()
                 log_fp.write("Preserved and authenticated active user session successfully.\n")
             except Exception as se:
-                log_fp.write(f"Warning restoring active user session: {str(se)}\n")
+                import traceback
+                log_fp.write(f"Warning restoring active user session:\n{traceback.format_exc()}\n")
         else:
             log_fp.write("Skipping user session restore (not active or missing backup).\n")
 

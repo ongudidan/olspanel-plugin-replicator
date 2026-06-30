@@ -847,8 +847,16 @@ function checkJobFinalStatus(jobId) {
     const cancelBtn = document.getElementById('btn-cancel-migration');
 
     fetch(`/module/replicator/status/${jobId}/`)
-    .then(res => res.json())
+    .then(res => {
+        const contentType = res.headers.get("content-type");
+        if (res.redirected || (res.url && res.url.includes('/login/')) || (contentType && contentType.includes("text/html"))) {
+            window.location.href = '/login/';
+            return;
+        }
+        return res.json();
+    })
     .then(data => {
+        if (!data) return;
         if (data.status === 'success') {
             if (data.job_status === 'completed') {
                 statusBadge.className = 'btn-primary-success';
