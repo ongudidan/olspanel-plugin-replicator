@@ -1043,6 +1043,41 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             except Exception as e:
                 log_fp.write(f"Warning adding domain metadata to DB: {str(e)}\n")
 
+        # Self-healing Django migrations handler
+        log_fp.write("\nSyncing panel database migrations & running self-healer...\n")
+        try:
+            from django.core.management import call_command
+            try:
+                call_command('migrate', interactive=False)
+                log_fp.write("Migrations completed successfully.\n")
+            except Exception as migrate_err:
+                err_str = str(migrate_err)
+                if "already exists" in err_str:
+                    log_fp.write(f"Migration conflict detected: {err_str}. Resolving schema on the fly...\n")
+                    
+                    if "packages" in err_str:
+                        # Manually add the missing pkg_id column to users_profile if not present
+                        with connection.cursor() as cursor:
+                            try:
+                                cursor.execute("ALTER TABLE users_profile ADD COLUMN pkg_id INT DEFAULT NULL;")
+                                log_fp.write("Successfully added missing 'pkg_id' column to 'users_profile' table.\n")
+                            except Exception:
+                                pass
+                        # Fake apply users migration 0005
+                        call_command('migrate', 'users', '0005', fake=True, interactive=False)
+                        log_fp.write("Faked conflicting migration 'users.0005'.\n")
+                    
+                    # Retry migrating the rest of the database
+                    try:
+                        call_command('migrate', interactive=False)
+                        log_fp.write("Migrations completed successfully after resolving conflicts.\n")
+                    except Exception as retry_err:
+                        log_fp.write(f"Warning running migrations retry: {str(retry_err)}\n")
+                else:
+                    log_fp.write(f"Warning running migrations: {err_str}\n")
+        except Exception as e:
+            log_fp.write(f"Warning syncing database migrations: {str(e)}\n")
+
         # Reload OpenLiteSpeed to apply configurations
         log_fp.write("\nReloading OpenLiteSpeed web server...\n")
         subprocess.run(["/usr/local/lsws/bin/lswsctrl", "reload"])
