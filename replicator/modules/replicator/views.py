@@ -1132,7 +1132,7 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             mysql_remote_auth += f" -p'{remote_mysql_pass}'"
         
         # Script to output Grants statement with passwords (use sudo to access socket/password-linked mysql)
-        grants_dump_cmd = f"sudo {mysql_remote_auth} -B -N -e \"SELECT DISTINCT CONCAT('SHOW GRANTS FOR \\'', User, '\\'@\\'', Host, '\\';') FROM mysql.user WHERE User NOT IN ('root', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'mariadb.sys', 'debian-sys-maint');\""
+        grants_dump_cmd = f"sudo {mysql_remote_auth} -B -N -e \"SELECT DISTINCT CONCAT('SHOW GRANTS FOR \\'', User, '\\'@\\'', Host, '\\';') FROM mysql.user WHERE User NOT IN ('root', 'panel', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'mariadb.sys', 'debian-sys-maint');\""
         grants_list_res = run_ssh_command(grants_dump_cmd)
         
         if grants_list_res.returncode == 0:
