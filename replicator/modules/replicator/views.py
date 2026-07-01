@@ -755,9 +755,20 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                 else:
                     log_fp.write(f"Successfully created system user '{username}'.\n")
 
-            # Ensure OLS traversal permissions for home directory (711)
+            # Ensure OLS traversal permissions for home directory (711) and create essential subdirectories
             if os.path.exists(home_dir):
                 subprocess.run(["chmod", "711", home_dir])
+                for sub_dir in ['logs', 'tmp', 'etc']:
+                    sd_path = os.path.join(home_dir, sub_dir)
+                    os.makedirs(sd_path, exist_ok=True)
+                    try:
+                        import pwd
+                        uid = pwd.getpwnam(username).pw_uid
+                        gid = pwd.getpwnam(username).pw_gid
+                        os.chown(sd_path, uid, gid)
+                        os.chmod(sd_path, 0o755)
+                    except Exception:
+                        pass
 
             # Sync user Django metadata
             try:
@@ -1529,6 +1540,23 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         subprocess.run(["systemctl", "reload", "postfix"])
         subprocess.run(["systemctl", "restart", "dovecot"])
         log_fp.write("Mail services reloaded/restarted.\n")
+
+        # Fix Rainloop data directory permissions (supporting Debian/Ubuntu nogroup & CentOS nobody groups)
+        rainloop_data = os.path.join(settings.BASE_DIR, '3rdparty/rainloop/data')
+        if os.path.exists(rainloop_data):
+            log_fp.write("Ensuring correct Rainloop data folder permissions...\n")
+            try:
+                import grp
+                try:
+                    group_name = 'nogroup'
+                    grp.getgrnam(group_name)
+                except KeyError:
+                    group_name = 'nobody'
+                subprocess.run(["chown", "-R", f"nobody:{group_name}", rainloop_data])
+                subprocess.run(["chmod", "-R", "775", rainloop_data])
+                log_fp.write("Rainloop permissions verified and set.\n")
+            except Exception as re:
+                log_fp.write(f"Warning fixing Rainloop permissions: {str(re)}\n")
 
         # Job Completed Successfully
         completed_at = datetime.now()
