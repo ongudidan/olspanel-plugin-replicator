@@ -773,19 +773,40 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
             except Exception as e:
                 log_fp.write(f"Warning syncing Django user record: {str(e)}\n")
 
-            # Replicate the user's password file (for auto-login / file manager access)
-            for file_prefix in ["_", "phpmyadmin_"]:
-                remote_pf = f"{remote_base_dir}/etc/{file_prefix}{username}"
-                pwd_file_res = run_ssh_command(f"sudo cat {remote_pf}")
-                if pwd_file_res.returncode == 0:
-                    local_pf = os.path.join(settings.BASE_DIR, 'etc', f"{file_prefix}{username}")
-                    try:
-                        os.makedirs(os.path.dirname(local_pf), exist_ok=True)
-                        with open(local_pf, 'w') as f:
-                            f.write(pwd_file_res.stdout)
-                        log_fp.write(f"Synced auto-login credentials file '{file_prefix}{username}'.\n")
-                    except Exception as fe:
-                        log_fp.write(f"Warning writing credentials file locally: {str(fe)}\n")
+
+        # Replicate all panel user, email, and phpmyadmin credentials files from the source server etc/ directory
+        log_fp.write("\nSyncing auto-login credentials files from source server...\n")
+        try:
+            # List all matching credentials files in remote etc directory
+            list_cmd = f"sudo find {remote_base_dir}/etc/ -maxdepth 1 -type f \\( -name '_*' -o -name 'phpmyadmin_*' \\)"
+            list_res = run_ssh_command(list_cmd)
+            if list_res.returncode == 0:
+                remote_files = [line.strip() for line in list_res.stdout.splitlines() if line.strip()]
+                for rf in remote_files:
+                    filename = os.path.basename(rf)
+                    # Cat the file contents
+                    pwd_file_res = run_ssh_command(f"sudo cat '{rf}'")
+                    if pwd_file_res.returncode == 0:
+                        local_pf = os.path.join(settings.BASE_DIR, 'etc', filename)
+                        try:
+                            os.makedirs(os.path.dirname(local_pf), exist_ok=True)
+                            with open(local_pf, 'w') as f:
+                                f.write(pwd_file_res.stdout)
+                            # Set correct ownership (root:www-data) and permissions (644) so the panel can read them
+                            try:
+                                import grp
+                                www_group = grp.getgrnam('www-data').gr_gid
+                            except Exception:
+                                www_group = -1
+                            os.chown(local_pf, 0, www_group)
+                            os.chmod(local_pf, 0o644)
+                            log_fp.write(f"Synced credentials file '{filename}'.\n")
+                        except Exception as fe:
+                            log_fp.write(f"Warning writing credentials file '{filename}' locally: {str(fe)}\n")
+            else:
+                log_fp.write(f"Note: No credentials files found or remote find command failed: {list_res.stderr.strip()}\n")
+        except Exception as e:
+            log_fp.write(f"Warning replicating credentials files: {str(e)}\n")
 
         # 2b. Synchronize PHP Versions & Extensions
         log_fp.write("\n==================================================\n")
@@ -1026,6 +1047,35 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
                             os.symlink(archive_target_rel, link_path)
                 
                 log_fp.write(f"SSL Certificate files successfully synced.\n")
+
+            # Replicate emails for this domain if present on source server
+            remote_mail_path = f"/home/vmail/{owner}/{domain_name}"
+            remote_mail_check = run_ssh_command(f"sudo [ -d '{remote_mail_path}' ]")
+            if remote_mail_check.returncode == 0:
+                log_fp.write(f"Syncing emails for '{domain_name}'...\n")
+                dest_mail_path = f"/home/vmail/{owner}/{domain_name}"
+                os.makedirs(os.path.dirname(dest_mail_path), exist_ok=True)
+                
+                # Sync mail files using rsync
+                mail_rsync_cmd = ["rsync", rsync_flags, "--timeout=60", "--delete"]
+                if ssh_username != 'root':
+                    mail_rsync_cmd += ["--rsync-path=sudo rsync"]
+                mail_rsync_cmd += ["-e", ssh_rsync_opts, f"{ssh_username}@{ip}:{remote_mail_path}/", f"{dest_mail_path}/"]
+                
+                if auth_method == 'password':
+                    mail_rsync_cmd = ["sshpass", "-e"] + mail_rsync_cmd
+                    
+                mail_proc = subprocess.run(mail_rsync_cmd, env=env, capture_output=True, text=True)
+                if mail_proc.returncode == 0:
+                    log_fp.write("Email sync complete. Adjusting file permissions for vmail...\n")
+                    subprocess.run(["chown", "-R", "vmail:vmail", dest_mail_path])
+                    subprocess.run(["chmod", "-R", "700", dest_mail_path])
+                    # Also ensure the parent user folder has correct permissions
+                    parent_mail_path = f"/home/vmail/{owner}"
+                    subprocess.run(["chown", "vmail:vmail", parent_mail_path])
+                    subprocess.run(["chmod", "700", parent_mail_path])
+                else:
+                    log_fp.write(f"Email sync failed with code {mail_proc.returncode}: {mail_proc.stderr}\n")
 
         # 4. Synchronize Databases & Users (MySQL)
         log_fp.write("\n==================================================\n")
@@ -1460,6 +1510,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         log_fp.write("\nReloading OpenLiteSpeed web server...\n")
         subprocess.run(["/usr/local/lsws/bin/lswsctrl", "reload"])
         log_fp.write("OpenLiteSpeed reloaded.\n")
+
+        # Reload Postfix and restart Dovecot to ensure mail servers pick up the new mailboxes/SSL
+        log_fp.write("Reloading Postfix and restarting Dovecot services...\n")
+        subprocess.run(["systemctl", "reload", "postfix"])
+        subprocess.run(["systemctl", "restart", "dovecot"])
+        log_fp.write("Mail services reloaded/restarted.\n")
 
         # Job Completed Successfully
         completed_at = datetime.now()
