@@ -8,6 +8,7 @@ from datetime import datetime
 from django.shortcuts import render, get_object_or_404
 from django.http import JsonResponse, StreamingHttpResponse, HttpResponse
 from django.db import connection
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.admin.views.decorators import staff_member_required
 from users.models import Domain
