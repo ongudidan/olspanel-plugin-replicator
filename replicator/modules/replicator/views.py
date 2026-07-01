@@ -688,6 +688,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         dir_res = run_ssh_command("sudo cat /etc/olspanel/base_dir")
         if dir_res.returncode == 0 and dir_res.stdout.strip():
             remote_base_dir = dir_res.stdout.strip()
+        else:
+            for path in ["/usr/local/olspanel/mypanel", "/usr/local/lsws/Example/html/mypanel"]:
+                check_res = run_ssh_command(f"[ -d '{path}' ]")
+                if check_res.returncode == 0:
+                    remote_base_dir = path
+                    break
 
         # 2. Replicate Linux System Users
         log_fp.write("==================================================\n")
@@ -1090,6 +1096,12 @@ def run_replication_task(job_id, ip, port, ssh_username, auth_method, password, 
         dir_res = run_ssh_command("sudo cat /etc/olspanel/base_dir")
         if dir_res.returncode == 0 and dir_res.stdout.strip():
             remote_base_dir = dir_res.stdout.strip()
+        else:
+            for path in ["/usr/local/olspanel/mypanel", "/usr/local/lsws/Example/html/mypanel"]:
+                check_res = run_ssh_command(f"[ -d '{path}' ]")
+                if check_res.returncode == 0:
+                    remote_base_dir = path
+                    break
             
         # Fetch remote MySQL password from the remote server's configuration file (checking multiple version paths)
         remote_mysql_pass = ""
